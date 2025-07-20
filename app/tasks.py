@@ -3,11 +3,23 @@ import aiosqlite
 import redis.asyncio as redis
 from typing import List, Dict, Any
 from celery_app import celery_app
-from app.processing import prepare_flat_data
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
 from app.utils import deep_merge, cleanup_empty
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload
+
+def prepare_flat_data(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **record.get("payload", {}),
+        "device_id": record.get("device_id"),
+        "original_ingest_id": record.get("id"),
+        "request_id": record.get("request_id"),
+        "calculated_event_timestamp": record.get("calculated_event_timestamp"),
+        "received_at": record.get("received_at"),
+        "warnings": record.get("warnings"),
+        "client_ip": record.get("request_headers", {}).get("client_ip"),
+        "request_headers": record.get("request_headers", {})
+    }
 
 async def _process_and_store_statefully(records: List[Dict[str, Any]]):
     records_to_save = []

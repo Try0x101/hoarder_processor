@@ -6,10 +6,10 @@ from app.utils import format_utc_timestamp
 tf = TimezoneFinder()
 
 WEATHER_CODE_DESCRIPTIONS = {
-    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Rime fog",
-    51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle", 61: "Slight rain", 63: "Rain", 65: "Heavy rain",
-    71: "Slight snow", 73: "Snow", 75: "Heavy snow", 80: "Slight showers", 81: "Showers", 82: "Violent showers",
-    85: "Slight snow showers", 86: "Heavy snow showers", 95: "Thunderstorm"
+    0: "Clear", 1: "Mainly Clear", 2: "Partly Cloudy", 3: "Overcast", 45: "Fog", 48: "Rime Fog",
+    51: "Light Drizzle", 53: "Drizzle", 55: "Dense Drizzle", 61: "Slight Rain", 63: "Rain", 65: "Heavy Rain",
+    71: "Slight Snow", 73: "Snow", 75: "Heavy Snow", 80: "Slight Showers", 81: "Showers", 82: "Violent Showers",
+    85: "Slight Snow Showers", 86: "Heavy Snow Showers", 95: "Thunderstorm"
 }
 
 def safe_int(v):
@@ -20,18 +20,13 @@ def safe_float(v):
     try: return float(v)
     except (ValueError, TypeError, AttributeError): return None
 
-def get_timezone_info(lat, lon) -> Tuple[Optional[str], Optional[pytz.BaseTzInfo]]:
-    try:
-        lat, lon = safe_float(lat), safe_float(lon)
-        if lat is None or lon is None: return None, None
-        tz_name = tf.timezone_at(lng=lon, lat=lat)
-        if tz_name: return tz_name, pytz.timezone(tz_name)
-    except Exception: pass
-    return None, None
+def get_wind_direction_compass(degrees: Optional[float]) -> Optional[str]:
+    if degrees is None: return None
+    val = int((degrees / 22.5) + 0.5)
+    arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return arr[(val % 16)]
 
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    _, tz_obj = get_timezone_info(data.get('y'), data.get('x'))
-
     def f(key, unit, precision=0):
         val = safe_float(data.get(key))
         if val is None: return None
@@ -46,7 +41,7 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
                 "signal_strength": f('r', ' dBm'), "mcc": data.get('mc'), "mnc": data.get('mn'),
                 "cell_id": data.get('ci'), "tac": data.get('tc'),
             },
-            "bandwidth": {"download": f('d', ' Mbps'), "upload": f('u', ' Mbps')}
+            "bandwidth": {"download": f('d', ' Mbps', 1), "upload": f('u', ' Mbps', 1)}
         },
         "location": {
             "latitude": str(safe_float(data.get('y'))) if data.get('y') is not None else None,
@@ -59,7 +54,16 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
                 "description": WEATHER_CODE_DESCRIPTIONS.get(safe_int(data.get('code'))),
                 "temperature": f('temperature', '°C', 1), "apparent_temp": f('apparent_temp', '°C', 1),
                 "humidity": f('humidity', '%'), "precipitation": f('precipitation', ' mm', 1),
-                "wind_speed": f('wind_speed', ' km/h', 1), "wind_direction": f('wind_direction', '°')
+                "wind": {
+                    "speed": f('wind_speed', ' km/h', 1),
+                    "direction_deg": f('wind_direction', '°'),
+                    "direction_compass": get_wind_direction_compass(safe_float(data.get('wind_direction')))
+                }
+            },
+            "marine": {
+                "wave_height": f('marine_wave_height', ' m', 2),
+                "wave_direction": f('marine_wave_direction', '°'),
+                "wave_period": f('marine_wave_period', ' s', 1)
             }
         },
         "diagnostics": {

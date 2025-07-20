@@ -3,7 +3,33 @@ import math
 import datetime
 import time
 from enum import Enum
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
+import redis.asyncio as redis
+
+class WeatherRateLimiter:
+    def __init__(self, redis_client: redis.Redis):
+        self.redis = redis_client
+        self.limit = 9000
+        self.key = f"global_weather_limit:{datetime.date.today().isoformat()}"
+
+    async def is_rate_limited(self) -> bool:
+        if not self.redis:
+            return True
+        try:
+            count = await self.redis.get(self.key)
+            return int(count or 0) >= self.limit
+        except (redis.RedisError, ValueError):
+            return True
+
+    async def increment(self):
+        if not self.redis:
+            return
+        try:
+            current_val = await self.redis.incr(self.key)
+            if current_val == 1:
+                await self.redis.expire(self.key, 86400)
+        except redis.RedisError:
+            pass
 
 def deep_merge(source: dict, destination: dict) -> dict:
     result = copy.deepcopy(destination)
@@ -26,23 +52,15 @@ def calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     R = 6371.0
     if None in [lat1, lon1, lat2, lon2]:
         return float('inf')
-
     try:
-        lat1_rad = math.radians(float(lat1))
-        lon1_rad = math.radians(float(lon1))
-        lat2_rad = math.radians(float(lat2))
-        lon2_rad = math.radians(float(lon2))
+        lat1_rad, lon1_rad = math.radians(float(lat1)), math.radians(float(lon1))
+        lat2_rad, lon2_rad = math.radians(float(lat2)), math.radians(float(lon2))
     except (ValueError, TypeError):
         return float('inf')
-
-    dlat = lat2_rad - lat1_rad
-    dlon = lon2_rad - lon1_rad
-
+    dlat, dlon = lat2_rad - lat1_rad, lon2_rad - lon1_rad
     a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    distance = R * c
-    return distance
+    return R * c
 
 def diff_states(new_state: dict, old_state: dict) -> dict:
     delta = {}
@@ -73,11 +91,8 @@ class BreakerState(Enum):
 
 class SimpleCircuitBreaker:
     def __init__(self, name, failure_threshold=3, timeout=30):
-        self.name = name
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.failure_count = 0
-        self.last_failure_time = 0
+        self.name, self.failure_threshold, self.timeout = name, failure_threshold, timeout
+        self.failure_count, self.last_failure_time = 0, 0
         self.state = BreakerState.CLOSED
 
     async def call(self, func, *args, **kwargs):
