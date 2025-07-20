@@ -3,7 +3,7 @@ import os
 import orjson
 import redis.asyncio as redis
 import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
@@ -53,13 +53,16 @@ async def save_device_position(redis_client: redis.Redis, device_id: str, positi
     except redis.RedisError:
         pass
 
-async def get_latest_state_for_device(conn: aiosqlite.Connection, device_id: str) -> Optional[Dict[str, Any]]:
+async def get_latest_state_for_device(conn: aiosqlite.Connection, device_id: str) -> Optional[Tuple[Dict[str, Any], str]]:
     conn.row_factory = aiosqlite.Row
-    cursor = await conn.execute("SELECT enriched_payload FROM latest_enriched_state WHERE device_id = ?", (device_id,))
+    cursor = await conn.execute("SELECT enriched_payload, last_updated_ts FROM latest_enriched_state WHERE device_id = ?", (device_id,))
     row = await cursor.fetchone()
-    if row:
-        return orjson.loads(row["enriched_payload"])
-    return None
+    if row and row["enriched_payload"] and row["last_updated_ts"]:
+        try:
+            return orjson.loads(row["enriched_payload"]), row["last_updated_ts"]
+        except orjson.JSONDecodeError:
+            return None, None
+    return None, None
 
 async def save_stateful_data(records: List[Dict[str, Any]]):
     if not records:
