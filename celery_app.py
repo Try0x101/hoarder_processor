@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 celery_app = Celery(
     'hoarder_processor',
@@ -17,5 +18,11 @@ celery_app.conf.update(
     enable_utc=True,
     worker_pool_restarts=True,
     worker_max_tasks_per_child=1000,
-    worker_prefetch_multiplier=1
+    worker_prefetch_multiplier=1,
+    beat_schedule={
+        'cleanup-db-every-6-hours': {
+            'task': 'processor.cleanup_db',
+            'schedule': crontab(minute=15, hour='*/6'),
+        },
+    }
 )

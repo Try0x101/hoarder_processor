@@ -26,11 +26,53 @@ def get_wind_direction_compass(degrees: Optional[float]) -> Optional[str]:
     arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
     return arr[(val % 16)]
 
+def get_temperature_assessment(temp: Optional[float]) -> Optional[str]:
+    if temp is None: return None
+    if temp < 0: return "Freezing"
+    if temp < 10: return "Cold"
+    if temp < 20: return "Cool"
+    if temp < 25: return "Mild"
+    if temp < 30: return "Warm"
+    return "Hot"
+
+def get_wind_description(speed_ms: Optional[float]) -> Optional[str]:
+    if speed_ms is None: return None
+    if speed_ms < 0.3: return "Calm"
+    if speed_ms < 1.6: return "Light air"
+    if speed_ms < 3.4: return "Light breeze"
+    if speed_ms < 5.5: return "Gentle breeze"
+    if speed_ms < 8.0: return "Moderate breeze"
+    if speed_ms < 10.8: return "Fresh breeze"
+    if speed_ms < 13.9: return "Strong breeze"
+    return "High wind"
+
+def get_precipitation_info(precip_mm: Optional[float], code: Optional[int]) -> Dict[str, str]:
+    precip_type_map = {
+        "drizzle": "Drizzle", "rain": "Rain", "snow": "Snow", "showers": "Showers"
+    }
+    desc = WEATHER_CODE_DESCRIPTIONS.get(code, "").lower()
+    precip_type = next((v for k, v in precip_type_map.items() if k in desc), "Unknown")
+
+    if precip_mm is None or precip_mm == 0:
+        return {"summary": "No precipitation in the last hour.", "type": "None", "intensity": "None"}
+    
+    if precip_mm < 0.5: intensity = "Light"
+    elif precip_mm < 4.0: intensity = "Moderate"
+    else: intensity = "Heavy"
+    
+    return {"summary": f"{intensity} {precip_type.lower()} in the last hour.", "type": precip_type, "intensity": intensity}
+
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     def f(key, unit, precision=0):
         val = safe_float(data.get(key))
         if val is None: return None
         return f"{val:.{precision}f}{unit}"
+
+    temp_c = safe_float(data.get('temperature'))
+    precip_val = safe_float(data.get('precipitation'))
+    weather_code = safe_int(data.get('code'))
+    wind_speed_ms = safe_float(data.get('wind_speed'))
+    precip_info = get_precipitation_info(precip_val, weather_code)
 
     transformed = {
         "identity": {"device_id": data.get("device_id"), "device_name": data.get('n')},
@@ -51,19 +93,26 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "power": {"battery_percent": f('p', '%'), "capacity_mah": f('c', ' mAh')},
         "environment": {
             "weather": {
-                "description": WEATHER_CODE_DESCRIPTIONS.get(safe_int(data.get('code'))),
-                "temperature": f('temperature', '°C', 1), "apparent_temp": f('apparent_temp', '°C', 1),
-                "humidity": f('humidity', '%'), "precipitation": f('precipitation', ' mm', 1),
-                "wind": {
-                    "speed": f('wind_speed', ' km/h', 1),
-                    "direction_deg": f('wind_direction', '°'),
-                    "direction_compass": get_wind_direction_compass(safe_float(data.get('wind_direction')))
-                }
+                "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
+                "temperature": f('temperature', '°C', 1), "feels_like": f('apparent_temp', '°C', 1),
+                "assessment": get_temperature_assessment(temp_c), "humidity": f('humidity', '%'),
+                "pressure": f('pressure_msl', ' hPa', 0), "cloud_cover": f('cloud_cover', '%', 0)
+            },
+            "precipitation": precip_info,
+            "wind": {
+                "speed": f('wind_speed', ' m/s', 1), "gusts": f('wind_gusts', ' m/s', 1),
+                "description": get_wind_description(wind_speed_ms),
+                "direction": get_wind_direction_compass(safe_float(data.get('wind_direction')))
             },
             "marine": {
-                "wave_height": f('marine_wave_height', ' m', 2),
-                "wave_direction": f('marine_wave_direction', '°'),
-                "wave_period": f('marine_wave_period', ' s', 1)
+                "wave": {
+                    "height": f('marine_wave_height', ' m', 2), "period": f('marine_wave_period', ' s', 1),
+                    "direction": get_wind_direction_compass(safe_float(data.get('marine_wave_direction')))
+                },
+                "swell": {
+                    "height": f('marine_swell_wave_height', ' m', 2), "period": f('marine_swell_wave_period', ' s', 1),
+                    "direction": get_wind_direction_compass(safe_float(data.get('marine_swell_wave_direction')))
+                }
             }
         },
         "diagnostics": {

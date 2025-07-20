@@ -1,5 +1,7 @@
 set -euo pipefail
 
+cd "$(dirname "$0")"
+
 VENV_DIR="venv"
 LOG_DIR="logs"
 CELERY_LOG_FILE="${LOG_DIR}/celery_worker.log"

@@ -5,10 +5,12 @@ import aiosqlite
 import os
 import orjson
 import math
+import datetime
 from app.utils import format_utc_timestamp
 from .data_access import query_recent_devices, build_base_url, DB_PATH
 
 router = APIRouter()
+MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 
 def format_db_size(size_bytes: int) -> str:
     if not isinstance(size_bytes, int) or size_bytes < 0:
@@ -63,22 +65,47 @@ async def root(request: Request):
             time_range = await time_range_cur.fetchone()
         
         db_files_info = []
+        total_db_size = 0
         for suffix in ["", "-wal", "-shm"]:
             filepath = DB_PATH + suffix
             if os.path.exists(filepath):
                 size_bytes = os.path.getsize(filepath)
+                total_db_size += size_bytes
                 db_files_info.append({
                     "file": os.path.basename(filepath),
                     "size": format_db_size(size_bytes),
                     "path": filepath
                 })
+        
+        storage_estimation = {}
+        if time_range and time_range['oldest'] and time_range['newest'] and total_records and total_records['c'] > 1000:
+            try:
+                oldest_dt = datetime.datetime.fromisoformat(time_range['oldest'].replace(" ", "T"))
+                newest_dt = datetime.datetime.fromisoformat(time_range['newest'].replace(" ", "T"))
+                days_of_data = (newest_dt - oldest_dt).total_seconds() / 86400.0
+                if days_of_data > 0.1:
+                    rate_bytes_day = total_db_size / days_of_data
+                    remaining_bytes = MAX_DB_SIZE_BYTES - total_db_size
+                    if rate_bytes_day > 0 and remaining_bytes > 0:
+                        days_left = remaining_bytes / rate_bytes_day
+                        est_time = f"{days_left / 30:.1f} months" if days_left > 60 else f"{days_left:.1f} days"
+                        storage_estimation = {
+                            "retention_days": f"{days_of_data:.1f}",
+                            "storage_rate_per_day": format_db_size(int(rate_bytes_day)),
+                            "estimated_time_until_full": est_time,
+                        }
+            except (ValueError, TypeError, ZeroDivisionError):
+                pass
 
         db_stats = {
             "total_processed_records": total_records['c'] if total_records else 0,
             "total_unique_devices": total_devices['c'] if total_devices else 0,
             "oldest_record_timestamp_utc": format_utc_timestamp(time_range['oldest']) if time_range else None,
             "newest_record_timestamp_utc": format_utc_timestamp(time_range['newest']) if time_range else None,
-            "database_files": db_files_info
+            "database_files": db_files_info,
+            "total_database_size": format_db_size(total_db_size),
+            "database_size_limit": format_db_size(MAX_DB_SIZE_BYTES),
+            "storage_estimation": storage_estimation
         }
     except aiosqlite.Error as e:
         db_stats = {"error": f"Could not query database statistics: {e}"}

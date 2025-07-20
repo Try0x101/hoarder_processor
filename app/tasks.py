@@ -1,12 +1,16 @@
 import asyncio
 import aiosqlite
 import redis.asyncio as redis
+import os
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
 from app.utils import deep_merge, cleanup_empty
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload
+
+MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
+TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
 
 def prepare_flat_data(record: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -34,7 +38,6 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 if not device_id: continue
 
                 flat_data = prepare_flat_data(record)
-
                 flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
                 
                 structured_payload = transform_payload(flat_data)
@@ -70,3 +73,28 @@ def process_and_store_data(records: List[Dict[str, Any]]):
     if not records:
         return
     asyncio.run(_process_and_store_statefully(records))
+
+async def _async_cleanup_db():
+    try:
+        total_size = sum(os.path.getsize(DB_PATH + s) for s in ["", "-wal", "-shm"] if os.path.exists(DB_PATH + s))
+        if total_size < MAX_DB_SIZE_BYTES:
+            return
+
+        async with aiosqlite.connect(DB_PATH, timeout=120) as db:
+            while total_size > TARGET_DB_SIZE_BYTES:
+                cursor = await db.execute(
+                    "DELETE FROM enriched_telemetry WHERE id IN (SELECT id FROM enriched_telemetry ORDER BY calculated_event_timestamp ASC, id ASC LIMIT 1000)"
+                )
+                if cursor.rowcount == 0:
+                    break
+                await db.commit()
+                total_size = sum(os.path.getsize(DB_PATH + s) for s in ["", "-wal", "-shm"] if os.path.exists(DB_PATH + s))
+            
+            await db.execute("VACUUM")
+            await db.commit()
+    except Exception as e:
+        print(f"Error during DB cleanup: {e}")
+
+@celery_app.task(name="processor.cleanup_db")
+def cleanup_db():
+    asyncio.run(_async_cleanup_db())
