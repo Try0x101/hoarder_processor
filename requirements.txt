@@ -5,3 +5,5 @@ orjson
 celery
 redis
 httpx
+timezonefinderL
+pytz
