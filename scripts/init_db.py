@@ -1,11 +1,13 @@
 import sqlite3
 import os
+import sys
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
 
 def initialize_database():
     try:
+        print(f"Initializing database at: {DB_PATH}")
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
 
@@ -34,8 +36,10 @@ def initialize_database():
 
         con.commit()
         con.close()
+        print("Database initialized successfully.")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"CRITICAL: An error occurred during database initialization: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     initialize_database()

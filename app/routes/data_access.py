@@ -4,6 +4,7 @@ import orjson
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
+from app.utils import diff_states, format_utc_timestamp
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", DB_FILE)
@@ -14,7 +15,6 @@ def build_base_url(request: Request) -> str:
     return f"{request.url.scheme}://{request.url.netloc}"
 
 async def query_recent_devices(limit: int = 10) -> List[Dict[str, Any]]:
-    """Helper function to get recent devices from the state table."""
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -28,7 +28,7 @@ async def get_enriched_history(device_id: Optional[str], limit: int, cursor_ts: 
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            query_parts = ["SELECT id, enriched_payload, calculated_event_timestamp FROM enriched_telemetry"]
+            query_parts = ["SELECT id, original_ingest_id, enriched_payload, calculated_event_timestamp FROM enriched_telemetry"]
             params = []
             conditions = []
             if device_id:
@@ -40,7 +40,7 @@ async def get_enriched_history(device_id: Optional[str], limit: int, cursor_ts: 
             if conditions:
                 query_parts.append("WHERE " + " AND ".join(conditions))
             query_parts.append("ORDER BY calculated_event_timestamp DESC, id DESC LIMIT ?")
-            params.append(limit)
+            params.append(limit + 1)
             
             cursor = await db.execute(" ".join(query_parts), tuple(params))
             rows = await cursor.fetchall()
@@ -65,12 +65,37 @@ async def get_device_history(
         except (ValueError, IndexError):
             raise HTTPException(status_code=400, detail="Invalid cursor format.")
 
-    data = await get_enriched_history(device_id, limit, cursor_ts, cursor_id)
+    history_rows = await get_enriched_history(device_id, limit, cursor_ts, cursor_id)
     
+    data_with_deltas = []
+    if history_rows:
+        records_to_process = history_rows[:limit]
+        
+        for i, current_row in enumerate(records_to_process):
+            current_payload = orjson.loads(current_row['enriched_payload'])
+            previous_row_index = i + 1
+            
+            if previous_row_index < len(history_rows):
+                previous_payload = orjson.loads(history_rows[previous_row_index]['enriched_payload'])
+                changes = diff_states(current_payload, previous_payload)
+            else:
+                changes = current_payload
+
+            diagnostics = current_payload.get("diagnostics", {})
+            if "diagnostics" in changes:
+                del changes["diagnostics"]
+
+            data_with_deltas.append({
+                "id": current_row['id'],
+                "original_ingest_id": current_row.get('original_ingest_id'),
+                "changes": changes,
+                "diagnostics": diagnostics
+            })
+
     next_cursor_str = None
-    if len(data) == limit:
-        last_record = data[-1]
-        next_cursor_str = f"{last_record['calculated_event_timestamp']},{last_record['id']}"
+    if len(history_rows) > limit:
+        last_record_on_page = history_rows[limit-1]
+        next_cursor_str = f"{last_record_on_page['calculated_event_timestamp']},{last_record_on_page['id']}"
 
     base_params = [f"limit={limit}"]
     if device_id: base_params.append(f"device_id={device_id}")
@@ -85,8 +110,8 @@ async def get_device_history(
 
     return {
         "navigation": navigation,
-        "pagination": {"limit": limit, "records_returned": len(data), "next_cursor": next_cursor_str},
-        "data": [orjson.loads(row['enriched_payload']) for row in data]
+        "pagination": {"limit": limit, "records_returned": len(data_with_deltas), "next_cursor": next_cursor_str},
+        "data": data_with_deltas
     }
 
 @router.get("/latest/{device_id}")
@@ -109,6 +134,7 @@ async def get_devices_endpoint(request: Request, limit: int = 20):
     base_url = build_base_url(request)
     devices = await query_recent_devices(limit=limit)
     for device in devices:
+        device['last_updated_ts'] = format_utc_timestamp(device['last_updated_ts'])
         device['links'] = {
             'latest': f"{base_url}/data/latest/{device['device_id']}",
             'history': f"{base_url}/data/history?device_id={device['device_id']}"

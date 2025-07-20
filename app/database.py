@@ -1,10 +1,37 @@
 import aiosqlite
 import os
 import orjson
+import redis.asyncio as redis
+import datetime
 from typing import List, Dict, Any, Optional
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
+
+async def get_device_weather_state(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        state = await redis_client.hgetall(f"weather_state:{device_id}")
+        if state and "lat" in state and "lon" in state and "ts" in state:
+            return {
+                "lat": float(state["lat"]),
+                "lon": float(state["lon"]),
+                "ts": float(state["ts"]),
+            }
+    except (redis.RedisError, ValueError, TypeError):
+        return None
+    return None
+
+async def save_device_weather_state(redis_client: redis.Redis, device_id: str, lat: float, lon: float):
+    try:
+        key = f"weather_state:{device_id}"
+        await redis_client.hset(key, mapping={
+            "lat": lat,
+            "lon": lon,
+            "ts": datetime.datetime.now(datetime.timezone.utc).timestamp()
+        })
+        await redis_client.expire(key, 3600 * 24 * 7)
+    except redis.RedisError:
+        pass
 
 async def get_latest_state_for_device(conn: aiosqlite.Connection, device_id: str) -> Optional[Dict[str, Any]]:
     conn.row_factory = aiosqlite.Row
@@ -24,7 +51,6 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
             await db.execute("PRAGMA synchronous=NORMAL;")
             
             for record in records:
-                # Log the historical event
                 await db.execute(
                     "INSERT OR IGNORE INTO enriched_telemetry (original_ingest_id, device_id, enriched_payload, calculated_event_timestamp) VALUES (?, ?, ?, ?)",
                     (
@@ -34,7 +60,6 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
                         record.get("calculated_event_timestamp")
                     )
                 )
-                # Update the latest state view
                 await db.execute(
                     "INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET enriched_payload=excluded.enriched_payload, last_updated_ts=excluded.last_updated_ts",
                     (
