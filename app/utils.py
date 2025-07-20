@@ -1,11 +1,9 @@
 import copy
 import math
 import datetime
+from typing import Dict
 
 def deep_merge(source: dict, destination: dict) -> dict:
-    """
-    Recursively merges the source dictionary into a deep copy of the destination dictionary.
-    """
     result = copy.deepcopy(destination)
     for key, value in source.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -14,11 +12,15 @@ def deep_merge(source: dict, destination: dict) -> dict:
             result[key] = value
     return result
 
+def cleanup_empty(d: Dict) -> Dict:
+    if not isinstance(d, dict):
+        return d
+    return {
+        k: v for k, v in ((k, cleanup_empty(v)) for k, v in d.items())
+        if v is not None and v != ''
+    }
+
 def calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Calculate the distance between two points on Earth (in kilometers)
-    using the Haversine formula.
-    """
     R = 6371.0
     if None in [lat1, lon1, lat2, lon2]:
         return float('inf')
@@ -41,9 +43,6 @@ def calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return distance
 
 def diff_states(new_state: dict, old_state: dict) -> dict:
-    """
-    Recursively compares two dictionaries and returns a dictionary of the changes.
-    """
     delta = {}
     for key, new_val in new_state.items():
         if key not in old_state:
@@ -57,10 +56,6 @@ def diff_states(new_state: dict, old_state: dict) -> dict:
     return delta
 
 def format_utc_timestamp(ts_str: str) -> str:
-    """
-    Formats an ISO-like timestamp string into 'dd.mm.yyyy HH:MM:SS UTC'.
-    Returns None if the input is invalid or missing.
-    """
     if not ts_str or not isinstance(ts_str, str):
         return None
     try:

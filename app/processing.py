@@ -1,7 +1,7 @@
 import orjson
 import httpx
 from typing import Dict, Any, Optional
-from app.utils import format_utc_timestamp
+from app.utils import format_utc_timestamp, cleanup_empty
 
 def safe_int(value):
     if value is None: return None
@@ -16,14 +16,6 @@ def safe_float(value):
 def safe_string(value):
     if value is None or value == "": return None
     return str(value)
-
-def cleanup_empty(d: Dict) -> Dict:
-    if not isinstance(d, dict):
-        return d
-    return {
-        k: v for k, v in ((k, cleanup_empty(v)) for k, v in d.items())
-        if v is not None and v != '' and v != [] and v != {}
-    }
 
 async def fetch_weather_data(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
@@ -57,7 +49,7 @@ async def fetch_weather_data(lat: float, lon: float) -> Optional[Dict[str, Any]]
 async def enrich_record(record: Dict[str, Any]) -> Dict[str, Any]:
     try:
         original_payload = record.get("payload", {})
-        request_info = record.get("request_info", {})
+        request_info = record.get("request_headers", {})
         
         def f(val, unit):
             int_val = safe_int(val)
@@ -103,6 +95,7 @@ async def enrich_record(record: Dict[str, Any]) -> Dict[str, Any]:
                     "ingest_receive_timestamp_utc": format_utc_timestamp(record.get("received_at") or record.get("calculated_event_timestamp")),
                 },
                 "ingest_request_info": request_info,
+                "ingest_warnings": record.get("warnings"),
             }
         }
         

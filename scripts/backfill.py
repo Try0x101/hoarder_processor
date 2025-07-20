@@ -3,7 +3,6 @@ import httpx
 import time
 from app.tasks import process_and_store_data
 
-# The user must set this environment variable to point to the ingest server
 INGEST_API_BASE_URL = os.environ.get("INGEST_API_BASE_URL")
 
 def fetch_and_queue_history():
@@ -42,7 +41,6 @@ def fetch_and_queue_history():
                 print("No more records found. Backfill complete.")
                 break
 
-            # Delegate to the same Celery task as the real-time webhook
             process_and_store_data.delay(records)
             records_processed += len(records)
             print(f"  Queued {len(records)} records for processing. Total so far: {records_processed}")
@@ -59,7 +57,6 @@ def fetch_and_queue_history():
                 print("Could not determine next cursor. Backfill complete.")
                 break
 
-            # Small delay to avoid overwhelming the ingest API
             time.sleep(0.5)
 
     print(f"\nFinished. Total pages fetched: {page_count}. Total records queued: {records_processed}.")

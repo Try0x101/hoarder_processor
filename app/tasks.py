@@ -1,6 +1,7 @@
 import asyncio
 import aiosqlite
 import datetime
+import orjson
 import redis.asyncio as redis
 from typing import List, Dict, Any
 from celery_app import celery_app
@@ -49,8 +50,14 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 except (ValueError, TypeError):
                     pass
                 
+                new_diagnostics = new_data.pop("diagnostics", {})
+                
                 base_state = await get_latest_state_for_device(db, device_id) or {}
+                base_state.pop("diagnostics", None)
+                
                 merged_state = deep_merge(new_data, base_state)
+                
+                merged_state["diagnostics"] = new_diagnostics
                 
                 final_record = {
                     "original_ingest_id": partial_enrichment["original_ingest_id"],

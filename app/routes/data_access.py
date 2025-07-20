@@ -4,7 +4,7 @@ import orjson
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
-from app.utils import diff_states, format_utc_timestamp
+from app.utils import diff_states, format_utc_timestamp, cleanup_empty
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", DB_FILE)
@@ -18,7 +18,17 @@ async def query_recent_devices(limit: int = 10) -> List[Dict[str, Any]]:
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT device_id, last_updated_ts FROM latest_enriched_state ORDER BY last_updated_ts DESC LIMIT ?", (limit,))
+            query = """
+                SELECT
+                    les.device_id,
+                    les.last_updated_ts,
+                    les.enriched_payload,
+                    (SELECT COUNT(*) FROM enriched_telemetry et WHERE et.device_id = les.device_id) as total_records
+                FROM latest_enriched_state les
+                ORDER BY les.last_updated_ts DESC
+                LIMIT ?
+            """
+            cursor = await db.execute(query, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
     except Exception:
@@ -67,10 +77,9 @@ async def get_device_history(
 
     history_rows = await get_enriched_history(device_id, limit, cursor_ts, cursor_id)
     
+    records_to_process = history_rows[:limit]
     data_with_deltas = []
-    if history_rows:
-        records_to_process = history_rows[:limit]
-        
+    if records_to_process:
         for i, current_row in enumerate(records_to_process):
             current_payload = orjson.loads(current_row['enriched_payload'])
             previous_row_index = i + 1
@@ -92,25 +101,46 @@ async def get_device_history(
                 "diagnostics": diagnostics
             })
 
-    next_cursor_str = None
-    if len(history_rows) > limit:
-        last_record_on_page = history_rows[limit-1]
-        next_cursor_str = f"{last_record_on_page['calculated_event_timestamp']},{last_record_on_page['id']}"
-
     base_params = [f"limit={limit}"]
     if device_id: base_params.append(f"device_id={device_id}")
+
     self_params = base_params[:]
     if cursor: self_params.append(f"cursor={quote_plus(cursor)}")
     self_url = f"{base_url}/data/history?{'&'.join(self_params)}"
-    navigation = {"self": self_url, "root": f"{base_url}/"}
-    if next_cursor_str:
-        navigation["next_page"] = f"{base_url}/data/history?{'&'.join(base_params + [f'cursor={quote_plus(next_cursor_str)}'])}"
+
+    navigation = {"root": f"{base_url}/"}
     if cursor:
         navigation["first_page"] = f"{base_url}/data/history?{'&'.join(base_params)}"
 
+    next_cursor_obj = None
+    if len(history_rows) > limit:
+        last_record = history_rows[limit-1]
+        next_ts, next_id = last_record['calculated_event_timestamp'], last_record['id']
+        raw_cursor = f"{next_ts},{next_id}"
+        navigation["next_page"] = f"{base_url}/data/history?{'&'.join(base_params + [f'cursor={quote_plus(raw_cursor)}'])}"
+        next_cursor_obj = {
+            "raw": raw_cursor,
+            "timestamp": format_utc_timestamp(next_ts),
+            "id": next_id
+        }
+    
+    time_range = {}
+    if records_to_process:
+        start_ts = records_to_process[0]['calculated_event_timestamp']
+        end_ts = records_to_process[-1]['calculated_event_timestamp']
+        time_range = {"start": format_utc_timestamp(start_ts), "end": format_utc_timestamp(end_ts)}
+
+    pagination = {
+        "limit": limit,
+        "records_returned": len(data_with_deltas),
+        "next_cursor": next_cursor_obj,
+        "time_range": time_range
+    }
+
     return {
+        "request": {"self_url": self_url},
         "navigation": navigation,
-        "pagination": {"limit": limit, "records_returned": len(data_with_deltas), "next_cursor": next_cursor_str},
+        "pagination": cleanup_empty(pagination),
         "data": data_with_deltas
     }
 
@@ -133,10 +163,19 @@ async def get_latest_device_data(device_id: str):
 async def get_devices_endpoint(request: Request, limit: int = 20):
     base_url = build_base_url(request)
     devices = await query_recent_devices(limit=limit)
+    
+    processed_devices = []
     for device in devices:
-        device['last_updated_ts'] = format_utc_timestamp(device['last_updated_ts'])
-        device['links'] = {
-            'latest': f"{base_url}/data/latest/{device['device_id']}",
-            'history': f"{base_url}/data/history?device_id={device['device_id']}"
-        }
-    return devices
+        payload = orjson.loads(device['enriched_payload'])
+        processed_devices.append({
+            "device_id": device['device_id'],
+            "device_name": payload.get("identity", {}).get("device_name"),
+            "client_ip": payload.get("network", {}).get("source_ip"),
+            "last_seen": format_utc_timestamp(device['last_updated_ts']),
+            "total_records": device['total_records'],
+            'links': {
+                'latest': f"{base_url}/data/latest/{device['device_id']}",
+                'history': f"{base_url}/data/history?device_id={device['device_id']}&limit=50"
+            }
+        })
+    return processed_devices

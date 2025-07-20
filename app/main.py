@@ -9,11 +9,6 @@ app = FastAPI(
     redoc_url=None
 )
 
-# Root endpoint for API discovery
 app.include_router(root.router)
-
-# Internal endpoint for receiving data from ingest server
 app.include_router(internal.router)
-
-# Public endpoints for accessing enriched data
 app.include_router(data_access.router)
