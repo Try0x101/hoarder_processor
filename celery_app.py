@@ -3,8 +3,8 @@ from celery import Celery
 celery_app = Celery(
     'hoarder_processor',
     # Use different DB numbers to isolate from hoarder_ingest
-    broker="redis://localhost:6379/2",
-    backend="redis://localhost:6379/3",
+    broker="redis://localhost:6380/2",
+    backend="redis://localhost:6380/3",
     include=['app.tasks']
 )
 
