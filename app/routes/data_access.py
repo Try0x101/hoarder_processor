@@ -109,6 +109,8 @@ async def get_device_history(
     self_url = f"{base_url}/data/history?{'&'.join(self_params)}"
 
     navigation = {"root": f"{base_url}/"}
+    if device_id:
+        navigation["latest"] = f"{base_url}/data/latest/{device_id}"
     if cursor:
         navigation["first_page"] = f"{base_url}/data/history?{'&'.join(base_params)}"
 
@@ -145,7 +147,8 @@ async def get_device_history(
     }
 
 @router.get("/latest/{device_id}")
-async def get_latest_device_data(device_id: str):
+async def get_latest_device_data(request: Request, device_id: str):
+    base_url = build_base_url(request)
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             db.row_factory = aiosqlite.Row
@@ -153,7 +156,17 @@ async def get_latest_device_data(device_id: str):
             row = await cursor.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail=f"No state found for device '{device_id}'.")
-            return orjson.loads(row['enriched_payload'])
+            
+            payload = orjson.loads(row['enriched_payload'])
+            
+            return {
+                "request": {"self_url": f"{base_url}/data/latest/{device_id}"},
+                "navigation": {
+                    "root": f"{base_url}/",
+                    "history": f"{base_url}/data/history?device_id={device_id}&limit=50"
+                },
+                "data": payload
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -178,4 +191,10 @@ async def get_devices_endpoint(request: Request, limit: int = 20):
                 'history': f"{base_url}/data/history?device_id={device['device_id']}&limit=50"
             }
         })
-    return processed_devices
+
+    self_url = f"{base_url}/data/devices?limit={limit}"
+    return {
+        "request": {"self_url": self_url},
+        "navigation": {"root": f"{base_url}/"},
+        "data": processed_devices
+    }

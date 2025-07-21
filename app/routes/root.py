@@ -111,6 +111,7 @@ async def root(request: Request):
         db_stats = {"error": f"Could not query database statistics: {e}"}
 
     return {
+        "request": {"self_url": f"{base_url}/"},
         "server": "Hoarder Processor Server",
         "status": "online",
         "diagnostics": {
