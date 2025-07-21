@@ -14,3 +14,4 @@ celerybeat.pid
 .idea/
 .vscode/
 .env
+hoarder_processor.db-shm
