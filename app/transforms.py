@@ -80,24 +80,37 @@ def format_bssid(bssid_val: Any) -> Optional[str]:
 def format_distance(distance_km: Optional[float]) -> Optional[str]:
     if distance_km is None or distance_km == float('inf'):
         return None
-    if distance_km < 1.0:
-        return f"{distance_km * 1000:.0f} m"
-    return f"{distance_km:.1f} km"
+    rounded_km = round(distance_km)
+    if rounded_km < 1:
+        return "Less than 1 km"
+    return f"{rounded_km:.0f} km"
 
 def format_timespan_human(seconds: Optional[float]) -> Optional[str]:
     if seconds is None or seconds < 0:
         return None
     if seconds < 60:
-        val = int(seconds)
-        return f"{val} second{'s' if val != 1 else ''} ago"
+        return "Less than a minute ago"
     if seconds < 3600:
-        val = int(seconds / 60)
+        val = round(seconds / 60)
         return f"{val} minute{'s' if val != 1 else ''} ago"
     if seconds < 86400:
-        val = int(seconds / 3600)
+        val = round(seconds / 3600)
         return f"{val} hour{'s' if val != 1 else ''} ago"
-    val = int(seconds / 86400)
-    return f"{val} day{'s' if val != 1 else ''} ago"
+    if seconds < 86400 * 7:
+        val = round(seconds / 86400)
+        return f"{val} day{'s' if val != 1 else ''} ago"
+    if seconds < 86400 * 30.44:
+        val = round(seconds / (86400 * 7))
+        return f"{val} week{'s' if val != 1 else ''} ago"
+    if seconds < 86400 * 365.25:
+        val = round(seconds / (86400 * 30.44))
+        return f"{val} month{'s' if val != 1 else ''} ago"
+    
+    years = round(seconds / (86400 * 365.25), 1)
+    if years == int(years):
+        val = int(years)
+        return f"{val} year{'s' if val != 1 else ''} ago"
+    return f"{years} years ago"
 
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     def f(key, unit, precision=0):

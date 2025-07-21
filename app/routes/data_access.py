@@ -85,26 +85,31 @@ async def get_device_history(
     if records_to_process:
         for i, current_row in enumerate(records_to_process):
             current_payload = orjson.loads(current_row['enriched_payload'])
-            previous_row_index = i + 1
             
+            previous_payload = None
+            previous_row_index = i + 1
             if previous_row_index < len(history_rows):
                 previous_payload = orjson.loads(history_rows[previous_row_index]['enriched_payload'])
-                changes = diff_states(current_payload, previous_payload)
-            else:
-                changes = current_payload
+            
+            changes = diff_states(current_payload, previous_payload) if previous_payload else current_payload
 
-            diagnostics = current_payload.get("diagnostics", {})
+            current_diagnostics = current_payload.get("diagnostics", {})
+            event_diagnostics = {
+                "ingest_request_id": current_diagnostics.get("ingest_request_id"),
+                "timestamps": current_diagnostics.get("timestamps"),
+            }
+            
             if "diagnostics" in changes:
-                del changes["diagnostics"]
-
-            if diagnostics.get("weather") == {}:
-                diagnostics.pop("weather", None)
+                changes["diagnostics"].pop("ingest_request_id", None)
+                changes["diagnostics"].pop("timestamps", None)
+                if not changes["diagnostics"]:
+                    changes.pop("diagnostics", None)
 
             data_with_deltas.append({
                 "id": current_row['id'],
                 "original_ingest_id": current_row.get('original_ingest_id'),
-                "changes": changes,
-                "diagnostics": diagnostics
+                "changes": cleanup_empty(changes),
+                "diagnostics": cleanup_empty(event_diagnostics)
             })
 
     base_params = [f"limit={limit}"]
