@@ -7,7 +7,7 @@ from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
 from app.utils import deep_merge, cleanup_empty
 from app.weather import get_weather_enrichment
-from app.transforms import transform_payload
+from app.transforms import transform_payload, format_bssid
 
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
@@ -44,6 +44,19 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 current_record_ts = flat_data.get("calculated_event_timestamp")
                 if current_record_ts and last_known_ts and current_record_ts <= last_known_ts:
                     continue
+
+                if base_state:
+                    if 't' not in flat_data:
+                        previous_type = base_state.get("network", {}).get("type")
+                        if previous_type:
+                            flat_data['t'] = previous_type
+                
+                raw_bssid = flat_data.get('b')
+                if 'b' not in flat_data and base_state:
+                    flat_data['b'] = base_state.get("network", {}).get("wifi_bssid")
+                elif format_bssid(raw_bssid) is None:
+                    if base_state and 'network' in base_state and 'wifi_bssid' in base_state['network']:
+                        del base_state['network']['wifi_bssid']
 
                 cache_key = None
                 lat, lon = flat_data.get('y'), flat_data.get('x')

@@ -62,6 +62,20 @@ def get_precipitation_info(precip_mm: Optional[float], code: Optional[int]) -> D
     
     return {"summary": f"{intensity} {precip_type.lower()} in the last hour.", "type": precip_type, "intensity": intensity}
 
+def format_bssid(bssid_val: Any) -> Optional[str]:
+    if bssid_val is None:
+        return None
+    
+    s_bssid = str(bssid_val).strip().lower().replace(":", "")
+
+    if not s_bssid or s_bssid in ["0", "null"]:
+        return None
+
+    if len(s_bssid) == 12 and all(c in "0123456789abcdef" for c in s_bssid):
+        return ":".join(s_bssid[i:i+2] for i in range(0, 12, 2))
+        
+    return None
+
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     def f(key, unit, precision=0):
         val = safe_float(data.get(key))
@@ -74,11 +88,16 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     wind_speed_ms = safe_float(data.get('wind_speed'))
     precip_info = get_precipitation_info(precip_val, weather_code)
 
+    formatted_bssid = format_bssid(data.get('b'))
+    cellular_type = data.get('t')
+    active_network = "Wi-Fi" if formatted_bssid else cellular_type
+
     transformed = {
         "identity": {"device_id": data.get("device_id"), "device_name": data.get('n')},
         "network": {
-            "source_ip": data.get('client_ip'), "type": data.get('t'), "operator": data.get('o'),
-            "wifi_bssid": data.get('b'),
+            "active_network": active_network,
+            "source_ip": data.get('client_ip'), "type": cellular_type, "operator": data.get('o'),
+            "wifi_bssid": formatted_bssid,
             "cellular": {
                 "signal_strength": f('r', ' dBm'), "mcc": data.get('mc'), "mnc": data.get('mn'),
                 "cell_id": data.get('ci'), "tac": data.get('tc'),

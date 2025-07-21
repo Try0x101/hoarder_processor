@@ -64,14 +64,21 @@ def calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
 
 def diff_states(new_state: dict, old_state: dict) -> dict:
     delta = {}
-    for key, new_val in new_state.items():
+    all_keys = set(new_state.keys()) | set(old_state.keys())
+
+    for key in all_keys:
+        new_val = new_state.get(key)
+        old_val = old_state.get(key)
+
         if key not in old_state:
             delta[key] = new_val
-        elif isinstance(new_val, dict) and isinstance(old_state.get(key), dict):
-            sub_delta = diff_states(new_val, old_state[key])
+        elif key not in new_state:
+            delta[key] = None
+        elif isinstance(new_val, dict) and isinstance(old_val, dict):
+            sub_delta = diff_states(new_val, old_val)
             if sub_delta:
                 delta[key] = sub_delta
-        elif new_val != old_state.get(key):
+        elif new_val != old_val:
             delta[key] = new_val
     return delta
 
