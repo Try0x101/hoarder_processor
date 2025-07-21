@@ -3,6 +3,7 @@ import aiosqlite
 import redis.asyncio as redis
 import os
 import copy
+import datetime
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
@@ -46,9 +47,9 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 if current_record_ts and last_known_ts and current_record_ts <= last_known_ts:
                     continue
 
-                old_weather_ts = None
+                old_weather_diag = None
                 if base_state:
-                    old_weather_ts = base_state.get("diagnostics", {}).get("timestamps", {}).get("weather_request_timestamp_utc")
+                    old_weather_diag = base_state.get("diagnostics", {}).get("weather")
                     if 't' not in flat_data:
                         previous_type = base_state.get("network", {}).get("type")
                         if previous_type: flat_data['t'] = previous_type
@@ -60,21 +61,23 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     if base_state and 'network' in base_state and 'wifi_bssid' in base_state['network']:
                         del base_state['network']['wifi_bssid']
 
-                cache_key = None
-                lat, lon = flat_data.get('y'), flat_data.get('x')
-                if lat and lon:
-                    try: cache_key = f"{round(float(lat), 2)}:{round(float(lon), 2)}"
-                    except (ValueError, TypeError): pass
+                flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
 
-                if cache_key and cache_key in task_weather_cache:
-                    flat_data.update(task_weather_cache[cache_key])
-                else:
-                    weather_keys = {'temp', 'wind', 'marine', 'weather_fetch_ts'}
-                    weather_keys_before = {k for k in flat_data if any(wk in k for wk in weather_keys)}
-                    flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
-                    weather_keys_after = {k for k in flat_data if any(wk in k for wk in weather_keys)}
-                    if cache_key and len(weather_keys_after) > len(weather_keys_before):
-                        task_weather_cache[cache_key] = {k: flat_data[k] for k in weather_keys_after - weather_keys_before}
+                if 'weather_fetch_ts' not in flat_data and old_weather_diag:
+                    loc_str = old_weather_diag.get('weather_fetch_location')
+                    if loc_str:
+                        try:
+                            lat_s, lon_s = loc_str.split(',')
+                            flat_data['weather_fetch_lat'] = float(lat_s.strip())
+                            flat_data['weather_fetch_lon'] = float(lon_s.strip())
+                        except (ValueError, KeyError, IndexError): pass
+
+                    ts_str = old_weather_diag.get('weather_request_timestamp_utc')
+                    if ts_str:
+                        try:
+                            dt_obj = datetime.datetime.strptime(ts_str, '%d.%m.%Y %H:%M:%S UTC')
+                            flat_data['weather_fetch_ts'] = dt_obj.isoformat()
+                        except (ValueError, TypeError): pass
 
                 structured_payload = transform_payload(flat_data)
                 final_payload = cleanup_empty(structured_payload)
@@ -85,9 +88,9 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 historical_merged_state = deep_merge(final_payload, current_base_state)
                 latest_merged_state = copy.deepcopy(historical_merged_state)
 
-                new_timestamps = latest_merged_state.get("diagnostics", {}).get("timestamps", {})
-                if old_weather_ts and new_timestamps and 'weather_request_timestamp_utc' not in new_timestamps:
-                     new_timestamps['weather_request_timestamp_utc'] = old_weather_ts
+                new_diagnostics = latest_merged_state.get("diagnostics", {})
+                if old_weather_diag and not new_diagnostics.get("weather"):
+                    new_diagnostics["weather"] = old_weather_diag
                 
                 records_to_save.append({
                     "original_ingest_id": flat_data.get("original_ingest_id"),

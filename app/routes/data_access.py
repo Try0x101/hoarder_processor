@@ -94,6 +94,9 @@ async def get_device_history(
             if "diagnostics" in changes:
                 del changes["diagnostics"]
 
+            if diagnostics.get("weather") == {}:
+                diagnostics.pop("weather", None)
+
             data_with_deltas.append({
                 "id": current_row['id'],
                 "original_ingest_id": current_row.get('original_ingest_id'),

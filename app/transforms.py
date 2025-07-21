@@ -1,7 +1,8 @@
 import pytz
+import datetime
 from typing import Dict, Any, Tuple, Optional
 from timezonefinderL import TimezoneFinder
-from app.utils import format_utc_timestamp
+from app.utils import format_utc_timestamp, calculate_distance_km
 
 tf = TimezoneFinder()
 
@@ -76,6 +77,28 @@ def format_bssid(bssid_val: Any) -> Optional[str]:
         
     return None
 
+def format_distance(distance_km: Optional[float]) -> Optional[str]:
+    if distance_km is None or distance_km == float('inf'):
+        return None
+    if distance_km < 1.0:
+        return f"{distance_km * 1000:.0f} m"
+    return f"{distance_km:.1f} km"
+
+def format_timespan_human(seconds: Optional[float]) -> Optional[str]:
+    if seconds is None or seconds < 0:
+        return None
+    if seconds < 60:
+        val = int(seconds)
+        return f"{val} second{'s' if val != 1 else ''} ago"
+    if seconds < 3600:
+        val = int(seconds / 60)
+        return f"{val} minute{'s' if val != 1 else ''} ago"
+    if seconds < 86400:
+        val = int(seconds / 3600)
+        return f"{val} hour{'s' if val != 1 else ''} ago"
+    val = int(seconds / 86400)
+    return f"{val} day{'s' if val != 1 else ''} ago"
+
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     def f(key, unit, precision=0):
         val = safe_float(data.get(key))
@@ -91,6 +114,59 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     formatted_bssid = format_bssid(data.get('b'))
     cellular_type = data.get('t')
     active_network = "Wi-Fi" if formatted_bssid else cellular_type
+
+    battery_percent_val = safe_float(data.get('p'))
+    capacity_mah_val = safe_float(data.get('c'))
+    leftover_capacity_str = None
+    if battery_percent_val is not None and capacity_mah_val is not None:
+        leftover_capacity_val = (battery_percent_val / 100.0) * capacity_mah_val
+        leftover_capacity_str = f"{leftover_capacity_val:.0f} mAh"
+
+    fetch_lat = safe_float(data.get('weather_fetch_lat'))
+    fetch_lon = safe_float(data.get('weather_fetch_lon'))
+    weather_ts_iso = data.get("weather_fetch_ts")
+    event_ts_iso = data.get("calculated_event_timestamp")
+    
+    device_lat = safe_float(data.get('y'))
+    device_lon = safe_float(data.get('x'))
+    distance_km = calculate_distance_km(device_lat, device_lon, fetch_lat, fetch_lon)
+    distance_str = format_distance(distance_km)
+
+    age_str = None
+    if event_ts_iso and weather_ts_iso:
+        try:
+            event_dt = datetime.datetime.fromisoformat(event_ts_iso.replace(" ", "T").replace("Z", "+00:00"))
+            weather_dt = datetime.datetime.fromisoformat(weather_ts_iso.replace("Z", "+00:00"))
+            age_seconds = (event_dt - weather_dt).total_seconds()
+            age_str = format_timespan_human(age_seconds)
+        except (ValueError, TypeError):
+            age_str = None
+
+    weather_ts_local_str = None
+    if weather_ts_iso and fetch_lat is not None and fetch_lon is not None:
+        try:
+            tz_name = tf.timezone_at(lng=fetch_lon, lat=fetch_lat)
+            if tz_name:
+                utc_dt = datetime.datetime.fromisoformat(weather_ts_iso.replace("Z", "+00:00"))
+                local_tz = pytz.timezone(tz_name)
+                local_dt = utc_dt.astimezone(local_tz)
+                offset = local_dt.utcoffset()
+                if offset is not None:
+                    secs, sign = offset.total_seconds(), "+" if offset.total_seconds() >= 0 else "-"
+                    h, rem = divmod(abs(secs), 3600)
+                    m, _ = divmod(rem, 60)
+                    offset_str = f"UTC{sign}{int(h)}" if m == 0 else f"UTC{sign}{int(h)}:{int(m):02d}"
+                    weather_ts_local_str = local_dt.strftime(f'%d.%m.%Y %H:%M:%S {offset_str}')
+        except Exception:
+            weather_ts_local_str = None
+
+    weather_diag = {
+        "weather_fetch_location": f"{fetch_lat:.6f}, {fetch_lon:.6f}" if fetch_lat is not None and fetch_lon is not None else None,
+        "weather_distance_from_actual_location": distance_str,
+        "weather_data_old": age_str,
+        "weather_request_timestamp_utc": format_utc_timestamp(weather_ts_iso),
+        "weather_request_timestamp_location_time": weather_ts_local_str
+    }
 
     transformed = {
         "identity": {"device_id": data.get("device_id"), "device_name": data.get('n')},
@@ -109,7 +185,11 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
             "longitude": str(safe_float(data.get('x'))) if data.get('x') is not None else None,
             "altitude": f('a', ' m'), "accuracy": f('ac', ' m'), "speed": f('s', ' km/h'),
         },
-        "power": {"battery_percent": f('p', '%'), "capacity_mah": f('c', ' mAh')},
+        "power": {
+            "battery_percent": f('p', '%'),
+            "capacity_mah": f('c', ' mAh'),
+            "calculated_leftover_capacity": leftover_capacity_str
+        },
         "environment": {
             "weather": {
                 "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
@@ -136,10 +216,10 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         },
         "diagnostics": {
             "ingest_request_id": data.get("request_id"),
+            "weather": weather_diag,
             "timestamps": {
                 "device_event_timestamp_utc": format_utc_timestamp(data.get("calculated_event_timestamp")),
                 "ingest_receive_timestamp_utc": format_utc_timestamp(data.get("received_at") or data.get("calculated_event_timestamp")),
-                "weather_request_timestamp_utc": format_utc_timestamp(data.get("weather_fetch_ts")),
             },
             "ingest_request_info": data.get("request_headers"),
             "ingest_warnings": data.get("warnings"),

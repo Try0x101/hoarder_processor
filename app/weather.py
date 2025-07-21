@@ -114,6 +114,8 @@ async def get_weather_enrichment(redis_client, device_id: str, data: Dict[str, A
             weather, weather_ts = await get_coordinated_weather_data(rate_limiter, lat, lon)
             if weather:
                 data.update(weather)
+                data['weather_fetch_lat'] = lat
+                data['weather_fetch_lon'] = lon
                 if weather_ts:
                     data['weather_fetch_ts'] = weather_ts
                 await save_device_position(
