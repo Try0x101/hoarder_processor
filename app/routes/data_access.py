@@ -4,7 +4,7 @@ import orjson
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
-from app.utils import diff_states, format_utc_timestamp, cleanup_empty
+from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", DB_FILE)
@@ -168,7 +168,12 @@ async def get_latest_device_data(request: Request, device_id: str):
             if not row:
                 raise HTTPException(status_code=404, detail=f"No state found for device '{device_id}'.")
             
-            payload = orjson.loads(row['enriched_payload'])
+            freshness_payload = orjson.loads(row['enriched_payload'])
+            data_payload, freshness_info = parse_freshness_payload(freshness_payload)
+
+            if "diagnostics" not in data_payload:
+                data_payload["diagnostics"] = {}
+            data_payload["diagnostics"]["data_freshness"] = cleanup_empty(freshness_info)
             
             return {
                 "request": {"self_url": f"{base_url}/data/latest/{device_id}"},
@@ -176,7 +181,7 @@ async def get_latest_device_data(request: Request, device_id: str):
                     "root": f"{base_url}/",
                     "history": f"{base_url}/data/history?device_id={device_id}&limit=50"
                 },
-                "data": payload
+                "data": data_payload
             }
     except HTTPException:
         raise
@@ -190,7 +195,8 @@ async def get_devices_endpoint(request: Request, limit: int = 20):
     
     processed_devices = []
     for device in devices:
-        payload = orjson.loads(device['enriched_payload'])
+        freshness_payload = orjson.loads(device['enriched_payload'])
+        payload = reconstruct_from_freshness(freshness_payload)
         processed_devices.append({
             "device_id": device['device_id'],
             "device_name": payload.get("identity", {}).get("device_name"),

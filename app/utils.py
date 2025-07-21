@@ -3,8 +3,92 @@ import math
 import datetime
 import time
 from enum import Enum
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import redis.asyncio as redis
+
+def reconstruct_from_freshness(freshness_payload: Dict) -> Dict:
+    simple_payload = {}
+    if not isinstance(freshness_payload, dict):
+        return freshness_payload
+
+    for key, node in freshness_payload.items():
+        if isinstance(node, dict):
+            if "value" in node and "ts" in node:
+                simple_payload[key] = node["value"]
+            else:
+                simple_payload[key] = reconstruct_from_freshness(node)
+        else:
+            simple_payload[key] = node
+    return simple_payload
+
+def _convert_to_freshness(payload: Dict, timestamp: str) -> Dict:
+    fresh_payload = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            fresh_payload[key] = _convert_to_freshness(value, timestamp)
+        elif value is not None:
+            fresh_payload[key] = {"value": value, "ts": timestamp}
+    return fresh_payload
+
+def merge_and_update_freshness(base_freshness: Dict, new_simple: Dict, timestamp: str) -> Dict:
+    if not base_freshness:
+        return _convert_to_freshness(new_simple, timestamp)
+
+    result = copy.deepcopy(base_freshness)
+    
+    for key, new_value in new_simple.items():
+        if new_value is None:
+            if key in result:
+                del result[key]
+            continue
+            
+        if isinstance(new_value, dict):
+            base_node = result.get(key)
+            if isinstance(base_node, dict) and "value" not in base_node:
+                result[key] = merge_and_update_freshness(base_node, new_value, timestamp)
+            else:
+                result[key] = _convert_to_freshness(new_value, timestamp)
+        else:
+            result[key] = {"value": new_value, "ts": timestamp}
+
+    return result
+
+def parse_freshness_payload(freshness_payload: Dict) -> Tuple[Dict, Dict]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    data_payload = {}
+    freshness_info = {}
+
+    if not isinstance(freshness_payload, dict):
+        return {}, {}
+        
+    for key, node in freshness_payload.items():
+        if isinstance(node, dict):
+            if "value" in node and "ts" in node:
+                data_payload[key] = node["value"]
+                new_key = f"{key}_age_in_seconds"
+                try:
+                    ts_str = node["ts"]
+                    if isinstance(ts_str, str):
+                        naive_dt = datetime.datetime.fromisoformat(ts_str.replace(" ", "T"))
+                        aware_dt = naive_dt.replace(tzinfo=datetime.timezone.utc)
+                        age_seconds = (now - aware_dt).total_seconds()
+                        freshness_info[new_key] = round(age_seconds)
+                    else:
+                        freshness_info[new_key] = -1
+                except (ValueError, TypeError):
+                    freshness_info[new_key] = -1
+            else:
+                sub_data, sub_freshness = parse_freshness_payload(node)
+                if sub_data:
+                    data_payload[key] = sub_data
+                if sub_freshness:
+                    freshness_info[key] = sub_freshness
+        else:
+            data_payload[key] = node
+            new_key = f"{key}_age_in_seconds"
+            freshness_info[new_key] = "untracked"
+            
+    return data_payload, freshness_info
 
 class WeatherRateLimiter:
     def __init__(self, redis_client: redis.Redis):

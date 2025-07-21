@@ -8,7 +8,7 @@ import orjson
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
-from app.utils import deep_merge, cleanup_empty
+from app.utils import deep_merge, cleanup_empty, merge_and_update_freshness, reconstruct_from_freshness
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload, format_bssid
 
@@ -44,24 +44,29 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 request_size_bytes = len(orjson.dumps(record))
                 flat_data = prepare_flat_data(record)
                 
-                base_state, last_known_ts = await get_latest_state_for_device(db, device_id)
+                base_freshness_payload, last_known_ts = await get_latest_state_for_device(db, device_id)
                 current_record_ts = flat_data.get("calculated_event_timestamp")
+
+                if not current_record_ts:
+                    continue
+
                 if current_record_ts and last_known_ts and current_record_ts <= last_known_ts:
                     continue
 
+                simple_base_state = reconstruct_from_freshness(base_freshness_payload) if base_freshness_payload else {}
                 old_weather_diag = None
-                if base_state:
-                    old_weather_diag = base_state.get("diagnostics", {}).get("weather")
+                if simple_base_state:
+                    old_weather_diag = simple_base_state.get("diagnostics", {}).get("weather")
                     if 't' not in flat_data:
-                        previous_type = base_state.get("network", {}).get("type")
+                        previous_type = simple_base_state.get("network", {}).get("type")
                         if previous_type: flat_data['t'] = previous_type
                 
                 raw_bssid = flat_data.get('b')
-                if 'b' not in flat_data and base_state:
-                    flat_data['b'] = base_state.get("network", {}).get("wifi_bssid")
+                if 'b' not in flat_data and simple_base_state:
+                    flat_data['b'] = simple_base_state.get("network", {}).get("wifi_bssid")
                 elif format_bssid(raw_bssid) is None:
-                    if base_state and 'network' in base_state and 'wifi_bssid' in base_state['network']:
-                        del base_state['network']['wifi_bssid']
+                    if simple_base_state and 'network' in simple_base_state and 'wifi_bssid' in simple_base_state['network']:
+                        del simple_base_state['network']['wifi_bssid']
 
                 flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
 
@@ -82,23 +87,27 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                         except (ValueError, TypeError): pass
 
                 structured_payload = transform_payload(flat_data)
-                final_payload = cleanup_empty(structured_payload)
+                new_simple_payload = cleanup_empty(structured_payload)
                 
-                current_base_state = base_state or {}
-                current_base_state.pop("diagnostics", None)
-                
-                historical_merged_state = deep_merge(final_payload, current_base_state)
-                latest_merged_state = copy.deepcopy(historical_merged_state)
+                simple_base_state_for_history = copy.deepcopy(simple_base_state)
+                simple_base_state_for_history.pop("diagnostics", None)
+                historical_payload = deep_merge(new_simple_payload, simple_base_state_for_history)
 
-                new_diagnostics = latest_merged_state.get("diagnostics", {})
-                if old_weather_diag and not new_diagnostics.get("weather"):
-                    new_diagnostics["weather"] = old_weather_diag
+                latest_simple_payload_for_freshness = copy.deepcopy(new_simple_payload)
+                if old_weather_diag and not latest_simple_payload_for_freshness.get("diagnostics", {}).get("weather"):
+                    latest_simple_payload_for_freshness.setdefault("diagnostics", {}).setdefault("weather", old_weather_diag)
+
+                latest_freshness_payload = merge_and_update_freshness(
+                    base_freshness_payload or {},
+                    latest_simple_payload_for_freshness,
+                    current_record_ts
+                )
                 
                 records_to_save.append({
                     "original_ingest_id": flat_data.get("original_ingest_id"),
                     "device_id": device_id,
-                    "historical_payload": historical_merged_state,
-                    "latest_payload": latest_merged_state,
+                    "historical_payload": historical_payload,
+                    "latest_payload": latest_freshness_payload,
                     "calculated_event_timestamp": current_record_ts,
                     "request_size_bytes": request_size_bytes
                 })

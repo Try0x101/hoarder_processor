@@ -6,7 +6,7 @@ import os
 import orjson
 import math
 import datetime
-from app.utils import format_utc_timestamp
+from app.utils import format_utc_timestamp, reconstruct_from_freshness
 from .data_access import query_recent_devices, build_base_url, DB_PATH
 
 router = APIRouter()
@@ -67,7 +67,8 @@ async def root(request: Request):
     recent_devices = []
     for device in devices_raw:
         device_id = device.get('device_id')
-        payload = orjson.loads(device['enriched_payload'])
+        freshness_payload = orjson.loads(device['enriched_payload'])
+        payload = reconstruct_from_freshness(freshness_payload)
         
         traffic_stats = {
             "average_total_traffic_per_day": "N/A",
