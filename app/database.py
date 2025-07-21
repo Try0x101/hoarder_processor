@@ -75,12 +75,13 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
             
             for record in records:
                 await db.execute(
-                    "INSERT OR IGNORE INTO enriched_telemetry (original_ingest_id, device_id, enriched_payload, calculated_event_timestamp) VALUES (?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO enriched_telemetry (original_ingest_id, device_id, enriched_payload, calculated_event_timestamp, request_size_bytes) VALUES (?, ?, ?, ?, ?)",
                     (
                         record.get("original_ingest_id"),
                         record.get("device_id"),
                         orjson.dumps(record.get("historical_payload")).decode(),
-                        record.get("calculated_event_timestamp")
+                        record.get("calculated_event_timestamp"),
+                        record.get("request_size_bytes")
                     )
                 )
                 await db.execute(

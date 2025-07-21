@@ -18,10 +18,36 @@ def format_db_size(size_bytes: int) -> str:
     if size_bytes == 0:
         return "0 B"
     size_name = ("B", "KB", "MB", "GB", "TB")
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
     i = int(math.floor(math.log(size_bytes, 1024)))
     p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
+    s = round(size_bytes / p)
     return f"{s} {size_name[i]}"
+
+def format_retention_period(days: float) -> str:
+    if days <= 0:
+        return "Less than a minute"
+    seconds = days * 86400
+    if seconds < 3600:
+        val = round(seconds / 60)
+        return f"{val} minute{'s' if val != 1 else ''}"
+    if seconds < 86400:
+        val = round(seconds / 3600)
+        return f"{val} hour{'s' if val != 1 else ''}"
+    if seconds < 86400 * 7:
+        val = round(seconds / 86400)
+        return f"{val} day{'s' if val != 1 else ''}"
+    if seconds < 86400 * 30:
+        val = round(seconds / (86400 * 7))
+        return f"{val} week{'s' if val != 1 else ''}"
+    if seconds < 86400 * 365:
+        val = round(seconds / (86400 * 30.44))
+        return f"{val} month{'s' if val != 1 else ''}"
+    years = round(seconds / (86400 * 365.25), 1)
+    if years == int(years):
+        return f"{int(years)} year{'s' if int(years) != 1 else ''}"
+    return f"{years} years"
 
 @router.get("/", tags=["Root"])
 async def root(request: Request):
@@ -40,16 +66,48 @@ async def root(request: Request):
     devices_raw = await query_recent_devices(limit=10)
     recent_devices = []
     for device in devices_raw:
+        device_id = device.get('device_id')
         payload = orjson.loads(device['enriched_payload'])
+        
+        traffic_stats = {
+            "average_total_traffic_per_day": "N/A",
+            "average_total_traffic_per_week": "N/A",
+            "average_total_traffic_per_month": "N/A"
+        }
+        
+        total_bytes = device.get('total_bytes') or 0
+        first_seen_ts = device.get('first_seen_ts')
+        
+        if total_bytes == 0:
+            traffic_stats = {
+                "average_total_traffic_per_day": "0 B",
+                "average_total_traffic_per_week": "0 B",
+                "average_total_traffic_per_month": "0 B"
+            }
+        elif first_seen_ts:
+            try:
+                naive_dt = datetime.datetime.fromisoformat(first_seen_ts.replace(" ", "T"))
+                first_seen_dt = naive_dt.replace(tzinfo=datetime.timezone.utc)
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                days_active = max((now_dt - first_seen_dt).total_seconds() / 86400.0, 1.0/24.0)
+                avg_bytes_per_day = total_bytes / days_active
+                traffic_stats["average_total_traffic_per_day"] = f"{format_db_size(int(avg_bytes_per_day))}"
+                traffic_stats["average_total_traffic_per_week"] = f"{format_db_size(int(avg_bytes_per_day * 7))}"
+                traffic_stats["average_total_traffic_per_month"] = f"{format_db_size(int(avg_bytes_per_day * 30.44))}"
+            except (ValueError, TypeError, ZeroDivisionError) as e:
+                print(f"ERROR calculating traffic for device {device_id}: {e}. First seen TS: '{first_seen_ts}'")
+                pass
+
         recent_devices.append({
-            "device_id": device['device_id'],
+            "device_id": device_id,
             "device_name": payload.get("identity", {}).get("device_name"),
             "client_ip": payload.get("network", {}).get("source_ip"),
             "last_seen": format_utc_timestamp(device['last_updated_ts']),
             "total_records": device['total_records'],
+            "traffic": traffic_stats,
             'links': {
                 'latest': f"{base_url}/data/latest/{device['device_id']}",
-                'history': f"{base_url}/data/history?device_id={device['device_id']}&limit=50"
+                'history': f"{base_url}/data/history?device_id={device_id}&limit=50"
             }
         })
     
@@ -80,21 +138,23 @@ async def root(request: Request):
         storage_estimation = {}
         if time_range and time_range['oldest'] and time_range['newest'] and total_records and total_records['c'] > 1000:
             try:
-                oldest_dt = datetime.datetime.fromisoformat(time_range['oldest'].replace(" ", "T"))
-                newest_dt = datetime.datetime.fromisoformat(time_range['newest'].replace(" ", "T"))
+                oldest_dt_naive = datetime.datetime.fromisoformat(time_range['oldest'].replace(" ", "T"))
+                oldest_dt = oldest_dt_naive.replace(tzinfo=datetime.timezone.utc)
+                newest_dt_naive = datetime.datetime.fromisoformat(time_range['newest'].replace(" ", "T"))
+                newest_dt = newest_dt_naive.replace(tzinfo=datetime.timezone.utc)
+                
                 days_of_data = (newest_dt - oldest_dt).total_seconds() / 86400.0
-                if days_of_data > 0.1:
+                if days_of_data > 0.0001:
                     rate_bytes_day = total_db_size / days_of_data
                     remaining_bytes = MAX_DB_SIZE_BYTES - total_db_size
+                    storage_estimation["database_retention"] = format_retention_period(days_of_data)
+                    storage_estimation["storage_rate_per_day"] = format_db_size(int(rate_bytes_day))
                     if rate_bytes_day > 0 and remaining_bytes > 0:
                         days_left = remaining_bytes / rate_bytes_day
                         est_time = f"{days_left / 30:.1f} months" if days_left > 60 else f"{days_left:.1f} days"
-                        storage_estimation = {
-                            "retention_days": f"{days_of_data:.1f}",
-                            "storage_rate_per_day": format_db_size(int(rate_bytes_day)),
-                            "estimated_time_until_full": est_time,
-                        }
-            except (ValueError, TypeError, ZeroDivisionError):
+                        storage_estimation["estimated_time_until_full"] = est_time
+            except (ValueError, TypeError, ZeroDivisionError) as e:
+                print(f"ERROR calculating storage estimation: {e}")
                 pass
 
         db_stats = {

@@ -4,6 +4,7 @@ import redis.asyncio as redis
 import os
 import copy
 import datetime
+import orjson
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
@@ -40,6 +41,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 device_id = record.get("device_id")
                 if not device_id: continue
 
+                request_size_bytes = len(orjson.dumps(record))
                 flat_data = prepare_flat_data(record)
                 
                 base_state, last_known_ts = await get_latest_state_for_device(db, device_id)
@@ -98,6 +100,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     "historical_payload": historical_merged_state,
                     "latest_payload": latest_merged_state,
                     "calculated_event_timestamp": current_record_ts,
+                    "request_size_bytes": request_size_bytes
                 })
 
         if records_to_save:
@@ -105,6 +108,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
 
     except Exception as e:
         print(f"Error in stateful processing task: {e}")
+        raise
     finally:
         if redis_client:
             await redis_client.close()

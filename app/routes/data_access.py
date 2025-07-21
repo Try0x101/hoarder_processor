@@ -23,7 +23,9 @@ async def query_recent_devices(limit: int = 10) -> List[Dict[str, Any]]:
                     les.device_id,
                     les.last_updated_ts,
                     les.enriched_payload,
-                    (SELECT COUNT(*) FROM enriched_telemetry et WHERE et.device_id = les.device_id) as total_records
+                    COALESCE((SELECT COUNT(*) FROM enriched_telemetry et WHERE et.device_id = les.device_id), 0) as total_records,
+                    COALESCE((SELECT SUM(et.request_size_bytes) FROM enriched_telemetry et WHERE et.device_id = les.device_id), 0) as total_bytes,
+                    (SELECT MIN(et.calculated_event_timestamp) FROM enriched_telemetry et WHERE et.device_id = les.device_id) as first_seen_ts
                 FROM latest_enriched_state les
                 ORDER BY les.last_updated_ts DESC
                 LIMIT ?
@@ -31,7 +33,8 @@ async def query_recent_devices(limit: int = 10) -> List[Dict[str, Any]]:
             cursor = await db.execute(query, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-    except Exception:
+    except Exception as e:
+        print(f"ERROR QUERYING RECENT DEVICES: {e}")
         return []
 
 async def get_enriched_history(device_id: Optional[str], limit: int, cursor_ts: Optional[str], cursor_id: Optional[int]) -> List[Dict[str, Any]]:
