@@ -23,22 +23,21 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         identity = payload.get("identity", {})
         network = payload.get("network", {})
         power = payload.get("power", {})
-        environment = payload.get("environment", {})
 
         properties = {
+            "latitude": lat,
+            "longitude": lon,
             "internal_id": db_row["id"],
-            "original_ingest_id": db_row["original_ingest_id"],
             "device_id": identity.get("device_id"),
             "device_name": identity.get("device_name"),
             "timestamp_utc": db_row["calculated_event_timestamp"],
             "active_network": network.get("active_network"),
-            "network_type": network.get("type"),
             "operator": network.get("operator"),
-            "wifi_bssid": network.get("wifi_bssid"),
             "battery_percent": power.get("battery_percent"),
-            "weather_description": environment.get("weather", {}).get("description"),
-            "temperature": environment.get("weather", {}).get("temperature"),
-            "source_ip": network.get("source_ip"),
+            "speed": location.get("speed"),
+            "altitude": location.get("altitude"),
+            "accuracy": location.get("accuracy"),
+            "signal_strength": network.get("cellular", {}).get("signal_strength"),
         }
 
         feature = {
