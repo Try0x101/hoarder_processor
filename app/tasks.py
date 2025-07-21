@@ -2,6 +2,7 @@ import asyncio
 import aiosqlite
 import redis.asyncio as redis
 import os
+import copy
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
@@ -45,11 +46,12 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 if current_record_ts and last_known_ts and current_record_ts <= last_known_ts:
                     continue
 
+                old_weather_ts = None
                 if base_state:
+                    old_weather_ts = base_state.get("diagnostics", {}).get("timestamps", {}).get("weather_request_timestamp_utc")
                     if 't' not in flat_data:
                         previous_type = base_state.get("network", {}).get("type")
-                        if previous_type:
-                            flat_data['t'] = previous_type
+                        if previous_type: flat_data['t'] = previous_type
                 
                 raw_bssid = flat_data.get('b')
                 if 'b' not in flat_data and base_state:
@@ -67,29 +69,31 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 if cache_key and cache_key in task_weather_cache:
                     flat_data.update(task_weather_cache[cache_key])
                 else:
-                    weather_keys_before = {k for k in flat_data if 'temp' in k or 'wind' in k or 'marine' in k}
+                    weather_keys = {'temp', 'wind', 'marine', 'weather_fetch_ts'}
+                    weather_keys_before = {k for k in flat_data if any(wk in k for wk in weather_keys)}
                     flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
-                    weather_keys_after = {k for k in flat_data if 'temp' in k or 'wind' in k or 'marine' in k}
-                    
+                    weather_keys_after = {k for k in flat_data if any(wk in k for wk in weather_keys)}
                     if cache_key and len(weather_keys_after) > len(weather_keys_before):
-                        added_keys = weather_keys_after - weather_keys_before
-                        task_weather_cache[cache_key] = {k: flat_data[k] for k in added_keys}
+                        task_weather_cache[cache_key] = {k: flat_data[k] for k in weather_keys_after - weather_keys_before}
 
                 structured_payload = transform_payload(flat_data)
                 final_payload = cleanup_empty(structured_payload)
+                
+                current_base_state = base_state or {}
+                current_base_state.pop("diagnostics", None)
+                
+                historical_merged_state = deep_merge(final_payload, current_base_state)
+                latest_merged_state = copy.deepcopy(historical_merged_state)
 
-                new_diagnostics = final_payload.pop("diagnostics", {})
-                
-                base_state = base_state or {}
-                base_state.pop("diagnostics", None)
-                
-                merged_state = deep_merge(final_payload, base_state)
-                merged_state["diagnostics"] = new_diagnostics
+                new_timestamps = latest_merged_state.get("diagnostics", {}).get("timestamps", {})
+                if old_weather_ts and new_timestamps and 'weather_request_timestamp_utc' not in new_timestamps:
+                     new_timestamps['weather_request_timestamp_utc'] = old_weather_ts
                 
                 records_to_save.append({
                     "original_ingest_id": flat_data.get("original_ingest_id"),
                     "device_id": device_id,
-                    "enriched_payload": merged_state,
+                    "historical_payload": historical_merged_state,
+                    "latest_payload": latest_merged_state,
                     "calculated_event_timestamp": current_record_ts,
                 })
 

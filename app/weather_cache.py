@@ -4,7 +4,7 @@ import time
 import datetime
 import asyncio
 import aiofiles
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from app.utils import calculate_distance_km
 
 CACHE_DIR = "/tmp/weather_cache"
@@ -27,12 +27,12 @@ def safe_ensure_cache_dir():
     except OSError:
         return False
 
-async def find_cached_weather(lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    if not safe_ensure_cache_dir(): return None
+async def find_cached_weather(lat: float, lon: float) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not safe_ensure_cache_dir(): return None, None
     try:
         cache_files = await asyncio.to_thread(lambda: [os.path.join(CACHE_DIR, f) for f in os.listdir(CACHE_DIR) if f.endswith('.json')])
     except FileNotFoundError:
-        return None
+        return None, None
 
     for path in cache_files:
         try:
@@ -43,26 +43,30 @@ async def find_cached_weather(lat: float, lon: float) -> Optional[Dict[str, Any]
             cached_data = orjson.loads(content)
             
             if calculate_distance_km(lat, lon, cached_data.get('_meta', {}).get('lat', 0), cached_data.get('_meta', {}).get('lon', 0)) <= DISTANCE_THRESHOLD_KM:
-                return {k: v for k, v in cached_data.items() if k in WEATHER_KEYS}
+                weather_data = {k: v for k, v in cached_data.items() if k in WEATHER_KEYS}
+                timestamp = cached_data.get('_meta', {}).get('cached_at')
+                return weather_data, timestamp
         except (orjson.JSONDecodeError, KeyError, OSError, FileNotFoundError):
             continue
-    return None
+    return None, None
 
-async def save_weather_to_cache(lat: float, lon: float, data: Dict[str, Any]):
-    if not safe_ensure_cache_dir(): return
+async def save_weather_to_cache(lat: float, lon: float, data: Dict[str, Any]) -> Optional[str]:
+    if not safe_ensure_cache_dir(): return None
     
     key = f"{round(lat, 2)}_{round(lon, 2)}.json"
     filepath = os.path.join(CACHE_DIR, key)
     
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     cache_data = {k: v for k, v in data.items() if k in WEATHER_KEYS and v is not None}
-    cache_data['_meta'] = {'lat': lat, 'lon': lon, 'cached_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    cache_data['_meta'] = {'lat': lat, 'lon': lon, 'cached_at': timestamp}
     
     try:
         async with aiofiles.open(filepath, 'wb') as f:
             await f.write(orjson.dumps(cache_data))
         await _enforce_cache_limits()
+        return timestamp
     except (OSError, orjson.JSONEncodeError):
-        pass
+        return None
 
 async def _enforce_cache_limits():
     async with _cleanup_lock:

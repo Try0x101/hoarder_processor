@@ -79,7 +79,7 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
                     (
                         record.get("original_ingest_id"),
                         record.get("device_id"),
-                        orjson.dumps(record.get("enriched_payload")).decode(),
+                        orjson.dumps(record.get("historical_payload")).decode(),
                         record.get("calculated_event_timestamp")
                     )
                 )
@@ -87,7 +87,7 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
                     "INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET enriched_payload=excluded.enriched_payload, last_updated_ts=excluded.last_updated_ts",
                     (
                         record.get("device_id"),
-                        orjson.dumps(record.get("enriched_payload")).decode(),
+                        orjson.dumps(record.get("latest_payload")).decode(),
                         record.get("calculated_event_timestamp")
                     )
                 )

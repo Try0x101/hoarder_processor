@@ -139,6 +139,7 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
             "timestamps": {
                 "device_event_timestamp_utc": format_utc_timestamp(data.get("calculated_event_timestamp")),
                 "ingest_receive_timestamp_utc": format_utc_timestamp(data.get("received_at") or data.get("calculated_event_timestamp")),
+                "weather_request_timestamp_utc": format_utc_timestamp(data.get("weather_fetch_ts")),
             },
             "ingest_request_info": data.get("request_headers"),
             "ingest_warnings": data.get("warnings"),

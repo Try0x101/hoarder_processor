@@ -1,7 +1,7 @@
 import httpx
 import asyncio
 import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from app.utils import weather_breaker, wttr_breaker, calculate_distance_km, WeatherRateLimiter
 from app.database import get_device_position, save_device_position
@@ -69,18 +69,19 @@ async def _get_weather_from_api(lat: float, lon: float) -> Optional[Dict[str, An
         except Exception:
             return None
 
-async def get_coordinated_weather_data(rate_limiter: WeatherRateLimiter, lat: float, lon: float) -> Optional[Dict[str, Any]]:
-    cached = await find_cached_weather(lat, lon)
-    if cached:
-        return cached
+async def get_coordinated_weather_data(rate_limiter: WeatherRateLimiter, lat: float, lon: float) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    cached_data, timestamp = await find_cached_weather(lat, lon)
+    if cached_data:
+        return cached_data, timestamp
     if await rate_limiter.is_rate_limited():
-        return None
+        return None, None
     
     api_data = await _get_weather_from_api(lat, lon)
     if api_data:
         await rate_limiter.increment()
-        await save_weather_to_cache(lat, lon, api_data)
-    return api_data
+        timestamp = await save_weather_to_cache(lat, lon, api_data)
+        return api_data, timestamp
+    return None, None
 
 async def _should_force_weather_update(redis_client, device_id: str, lat: float, lon: float) -> bool:
     last_pos = await get_device_position(redis_client, device_id)
@@ -110,9 +111,11 @@ async def get_weather_enrichment(redis_client, device_id: str, data: Dict[str, A
         lat, lon = float(lat_str), float(lon_str)
         if await _should_force_weather_update(redis_client, device_id, lat, lon):
             rate_limiter = WeatherRateLimiter(redis_client)
-            weather = await get_coordinated_weather_data(rate_limiter, lat, lon)
+            weather, weather_ts = await get_coordinated_weather_data(rate_limiter, lat, lon)
             if weather:
                 data.update(weather)
+                if weather_ts:
+                    data['weather_fetch_ts'] = weather_ts
                 await save_device_position(
                     redis_client, device_id, {
                         "lat": lat, "lon": lon,
