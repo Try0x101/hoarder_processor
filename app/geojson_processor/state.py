@@ -15,5 +15,7 @@ async def save_last_processed_id(last_id: int):
     try:
         async with aiofiles.open(settings.STATE_FILE_PATH, mode='w') as f:
             await f.write(orjson.dumps({"last_processed_id": last_id}).decode())
-    except IOError:
-        pass
+    except IOError as e:
+        print(f"CRITICAL: GEOJSON STATE: Failed to save last processed ID {last_id}: {e}")
+        raise
+

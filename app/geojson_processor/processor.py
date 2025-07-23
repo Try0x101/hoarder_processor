@@ -16,18 +16,24 @@ async def fetch_new_records(conn: aiosqlite.Connection, last_id: int):
 
 async def run_processor_once():
     last_processed_id = await state.load_last_processed_id()
+    print(f"GEOJSON: Starting run. Last processed ID: {last_processed_id}")
     
     manager = writer.GeoJSONManager()
     
     try:
         await manager.start_writing()
         
-        async with aiosqlite.connect(f"file:{settings.DB_PATH}?mode=ro", uri=True) as db:
+        async with aiosqlite.connect(settings.DB_PATH, timeout=30) as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            
             while True:
                 records = await fetch_new_records(db, last_processed_id)
                 if not records:
+                    print("GEOJSON: No new records found.")
                     break
 
+                print(f"GEOJSON: Fetched {len(records)} new records.")
                 features = []
                 for row in records:
                     feature = converter.process_row_to_geojson(dict(row))
@@ -40,6 +46,7 @@ async def run_processor_once():
                 new_last_id = records[-1]['id']
                 await state.save_last_processed_id(new_last_id)
                 last_processed_id = new_last_id
+                print(f"GEOJSON: Advanced to last processed ID: {last_processed_id}")
 
     except aiosqlite.Error as e:
         print(f"GeoJSON Processor DB Error: {e}")
@@ -47,3 +54,4 @@ async def run_processor_once():
         print(f"GeoJSON Processor Error: {e}")
     finally:
         await manager.finalize()
+        print("GEOJSON: Run finished.")
