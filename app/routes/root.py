@@ -5,14 +5,17 @@ import aiosqlite
 import os
 import orjson
 import math
+import asyncio
 import datetime
 import time
 from typing import Optional
+import redis.asyncio as redis
 from app.utils import format_utc_timestamp, reconstruct_from_freshness
 from .data_access import query_recent_devices, build_base_url, DB_PATH
 
 router = APIRouter()
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
+APP_START_TIME = time.time()
 
 def format_last_seen_ago(seconds: Optional[float]) -> Optional[str]:
     if seconds is None or seconds < 0:
@@ -53,6 +56,61 @@ def check_process_log_status(log_file_path: str, threshold_seconds: int) -> str:
         return "active"
     except OSError:
         return "error"
+
+async def _get_historical_metrics():
+    redis_client = None
+    try:
+        redis_client = redis.from_url("redis://localhost:6380/5", decode_responses=True, socket_timeout=2)
+        system_stats_raw, processing_stats_raw = await asyncio.gather(
+            redis_client.lrange("system_stats", 0, -1),
+            redis_client.lrange("processing_stats", 0, -1)
+        )
+        now = time.time()
+        
+        sys_metrics_1m, sys_metrics_1h = [], []
+        for item in system_stats_raw:
+            try:
+                data = orjson.loads(item)
+                age = now - data['ts']
+                if age <= 3600:
+                    sys_metrics_1h.append(data)
+                    if age <= 60: sys_metrics_1m.append(data)
+            except (orjson.JSONDecodeError, KeyError): continue
+
+        cpu_1m = sum(d['cpu_percent'] for d in sys_metrics_1m) / len(sys_metrics_1m) if sys_metrics_1m else None
+        mem_1m = sum(d['mem_rss_bytes'] for d in sys_metrics_1m) / len(sys_metrics_1m) if sys_metrics_1m else None
+        cpu_1h = sum(d['cpu_percent'] for d in sys_metrics_1h) / len(sys_metrics_1h) if sys_metrics_1h else None
+        mem_1h = sum(d['mem_rss_bytes'] for d in sys_metrics_1h) / len(sys_metrics_1h) if sys_metrics_1h else None
+
+        proc_metrics_1m, proc_metrics_1h = [], []
+        for item in processing_stats_raw:
+            try:
+                data = orjson.loads(item)
+                age = now - data['ts']
+                if age <= 3600:
+                    proc_metrics_1h.append(data)
+                    if age <= 60: proc_metrics_1m.append(data)
+            except (orjson.JSONDecodeError, KeyError): continue
+                
+        total_duration_1m = sum(d['duration'] for d in proc_metrics_1m)
+        total_count_1m = sum(d['count'] for d in proc_metrics_1m)
+        avg_time_1m_ms = (total_duration_1m / total_count_1m * 1000) if total_count_1m > 0 else None
+        
+        total_duration_1h = sum(d['duration'] for d in proc_metrics_1h)
+        total_count_1h = sum(d['count'] for d in proc_metrics_1h)
+        avg_time_1h_ms = (total_duration_1h / total_count_1h * 1000) if total_count_1h > 0 else None
+
+        return {
+            "cpu_usage_average_last_1_minute_perc": round(cpu_1m, 2) if cpu_1m is not None else None,
+            "cpu_usage_average_last_1_hour_perc": round(cpu_1h, 2) if cpu_1h is not None else None,
+            "memory_usage_average_last_1_minute_mb": int(round(mem_1m / 1024**2)) if mem_1m is not None else None,
+            "memory_usage_average_last_1_hour_mb": int(round(mem_1h / 1024**2)) if mem_1h is not None else None,
+            "record_processing_time_average_last_1_minute_ms": int(round(avg_time_1m_ms)) if avg_time_1m_ms is not None else None,
+            "record_processing_time_average_last_1_hour_ms": int(round(avg_time_1h_ms)) if avg_time_1h_ms is not None else None,
+        }
+    except redis.RedisError: return {}
+    finally:
+        if redis_client: await redis_client.close()
 
 @router.get("/", tags=["Root"])
 async def root(request: Request):
@@ -217,12 +275,34 @@ async def root(request: Request):
         CELERY_LOG_FILE = os.path.join(LOG_DIR, "celery_worker.log")
         CELERY_BEAT_LOG_FILE = os.path.join(LOG_DIR, "celery_beat.log")
         
+        uptime_seconds = time.time() - APP_START_TIME
+        celery_worker_status = check_process_log_status(CELERY_LOG_FILE, 300)
+        celery_beat_status = check_process_log_status(CELERY_BEAT_LOG_FILE, 900)
+        
+        health_checks = [
+            celery_worker_status == 'active',
+            celery_beat_status == 'active',
+            db_stats.get("error") is None,
+            time_since_last_record_seconds is not None and time_since_last_record_seconds < 1800
+        ]
+        uptime_percentage = round((sum(health_checks) / len(health_checks)) * 100, 2)
+
         system_health = {
-            "time_since_last_record_seconds": time_since_last_record_seconds,
-            "records_processed_last_hour": records_last_hour['c'] if records_last_hour else 0,
-            "active_devices_last_24h": active_devices['c'] if active_devices else 0,
-            "celery_worker_status": check_process_log_status(CELERY_LOG_FILE, 300),
-            "celery_beat_status": check_process_log_status(CELERY_BEAT_LOG_FILE, 900),
+            "uptime": {
+                "time_since_restart_utc": int(APP_START_TIME),
+                "time_since_restart": format_last_seen_ago(uptime_seconds),
+                "uptime_percentage": uptime_percentage
+            },
+            "activity": {
+                "time_since_last_record_seconds": time_since_last_record_seconds,
+                "records_processed_last_hour": records_last_hour['c'] if records_last_hour else 0,
+                "active_devices_last_24h": active_devices['c'] if active_devices else 0
+            },
+            "celery_status": {
+                "worker": celery_worker_status,
+                "beat": celery_beat_status
+            },
+            "performance": await _get_historical_metrics()
         }
 
     except aiosqlite.Error as e:

@@ -5,6 +5,9 @@ import os
 import copy
 import datetime
 import orjson
+import psutil
+import time
+import redis as sync_redis
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
@@ -29,10 +32,10 @@ def prepare_flat_data(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 async def _process_and_store_statefully(records: List[Dict[str, Any]]):
+    start_time = time.monotonic()
     records_to_save = []
     sorted_records = sorted(records, key=lambda r: r.get('calculated_event_timestamp', ''))
     redis_client = None
-    task_weather_cache = {}
     
     try:
         redis_client = redis.from_url("redis://localhost:6380/4", decode_responses=True, socket_timeout=2)
@@ -115,6 +118,25 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         if records_to_save:
             await save_stateful_data(records_to_save)
 
+        duration = time.monotonic() - start_time
+        num_records = len(records_to_save)
+        if num_records > 0:
+            stats_redis_client = None
+            try:
+                stats_redis_client = redis.from_url("redis://localhost:6380/5", decode_responses=False, socket_timeout=2)
+                data_point = orjson.dumps({
+                    "ts": time.time(), "duration": duration, "count": num_records
+                })
+                pipe = stats_redis_client.pipeline()
+                await pipe.lpush("processing_stats", data_point)
+                await pipe.ltrim("processing_stats", 0, 1999)
+                await pipe.execute()
+            except redis.RedisError:
+                pass
+            finally:
+                if stats_redis_client:
+                    await stats_redis_client.close()
+
     except Exception as e:
         print(f"Error in stateful processing task: {e}")
         raise
@@ -152,3 +174,47 @@ async def _async_cleanup_db():
 @celery_app.task(name="processor.cleanup_db")
 def cleanup_db():
     asyncio.run(_async_cleanup_db())
+
+def _get_app_processes():
+    pids = []
+    try:
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            if not proc.info['cmdline']:
+                continue
+            cmd = " ".join(proc.info['cmdline'])
+            if 'uvicorn app.main:app' in cmd or \
+               'celery -A celery_app worker' in cmd or \
+               'celery -A celery_app beat' in cmd:
+                pids.append(proc.pid)
+    except psutil.Error:
+        pass
+    return [psutil.Process(p) for p in set(pids) if psutil.pid_exists(p)]
+
+@celery_app.task(name="processor.monitor_system")
+def monitor_system():
+    try:
+        processes = _get_app_processes()
+        if not processes:
+            return
+
+        for p in processes:
+            p.cpu_percent()
+        time.sleep(0.5)
+
+        total_cpu = sum(p.cpu_percent() for p in processes)
+        total_mem = sum(p.memory_info().rss for p in processes)
+
+        redis_client = sync_redis.from_url("redis://localhost:6380/5", socket_timeout=2)
+        data_point = orjson.dumps({
+            "ts": time.time(), "cpu_percent": total_cpu, "mem_rss_bytes": total_mem
+        })
+        
+        pipe = redis_client.pipeline()
+        pipe.lpush("system_stats", data_point)
+        pipe.ltrim("system_stats", 0, 399)
+        pipe.execute()
+        redis_client.close()
+    except (psutil.Error, sync_redis.RedisError):
+        pass
+    except Exception:
+        pass

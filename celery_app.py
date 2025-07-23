@@ -30,5 +30,9 @@ celery_app.conf.update(
             'task': 'geojson_processor.run',
             'schedule': geojson_settings.TASK_SCHEDULE_SECONDS,
         },
+        'monitor-system-every-15-seconds': {
+            'task': 'processor.monitor_system',
+            'schedule': 15.0,
+        },
     }
 )
