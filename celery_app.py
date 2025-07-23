@@ -1,11 +1,12 @@
 from celery import Celery
 from celery.schedules import crontab
 from app.geojson_processor import settings as geojson_settings
+from app.database import CELERY_BROKER_URL, CELERY_RESULT_BACKEND_URL
 
 celery_app = Celery(
     'hoarder_processor',
-    broker="redis://localhost:6380/2",
-    backend="redis://localhost:6380/3",
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND_URL,
     include=['app.tasks', 'app.geojson_processor.tasks']
 )
 

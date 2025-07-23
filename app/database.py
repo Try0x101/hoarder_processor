@@ -8,6 +8,11 @@ from typing import List, Dict, Any, Optional, Tuple
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
 
+CELERY_BROKER_URL = "redis://localhost:6380/2"
+CELERY_RESULT_BACKEND_URL = "redis://localhost:6380/3"
+REDIS_POSITION_CACHE_URL = "redis://localhost:6380/4"
+REDIS_METRICS_CACHE_URL = "redis://localhost:6380/5"
+
 DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
 

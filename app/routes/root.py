@@ -11,7 +11,8 @@ import time
 from typing import Optional
 import redis.asyncio as redis
 from app.utils import format_utc_timestamp, reconstruct_from_freshness
-from .data_access import query_recent_devices, build_base_url, DB_PATH
+from .data_access import query_recent_devices, build_base_url
+from app.database import DB_PATH, REDIS_METRICS_CACHE_URL
 
 router = APIRouter()
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
@@ -60,7 +61,7 @@ def check_process_log_status(log_file_path: str, threshold_seconds: int) -> str:
 async def _get_historical_metrics():
     redis_client = None
     try:
-        redis_client = redis.from_url("redis://localhost:6380/5", decode_responses=True, socket_timeout=2)
+        redis_client = redis.from_url(REDIS_METRICS_CACHE_URL, decode_responses=True, socket_timeout=2)
         system_stats_raw, processing_stats_raw = await asyncio.gather(
             redis_client.lrange("system_stats", 0, -1),
             redis_client.lrange("processing_stats", 0, -1)

@@ -5,9 +5,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness
-
-DB_FILE = "hoarder_processor.db"
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", DB_FILE)
+from app.database import DB_PATH
 
 router = APIRouter(prefix="/data", tags=["Data Access"])
 

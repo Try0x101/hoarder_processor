@@ -10,7 +10,7 @@ import time
 import redis as sync_redis
 from typing import List, Dict, Any
 from celery_app import celery_app
-from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH
+from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH, REDIS_POSITION_CACHE_URL, REDIS_METRICS_CACHE_URL
 from app.utils import deep_merge, cleanup_empty, merge_and_update_freshness, reconstruct_from_freshness
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload, format_bssid
@@ -38,7 +38,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
     redis_client = None
     
     try:
-        redis_client = redis.from_url("redis://localhost:6380/4", decode_responses=True, socket_timeout=2)
+        redis_client = redis.from_url(REDIS_POSITION_CACHE_URL, decode_responses=True, socket_timeout=2)
         async with aiosqlite.connect(DB_PATH) as db:
             for record in sorted_records:
                 device_id = record.get("device_id")
@@ -123,7 +123,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         if num_records > 0:
             stats_redis_client = None
             try:
-                stats_redis_client = redis.from_url("redis://localhost:6380/5", decode_responses=False, socket_timeout=2)
+                stats_redis_client = redis.from_url(REDIS_METRICS_CACHE_URL, decode_responses=False, socket_timeout=2)
                 data_point = orjson.dumps({
                     "ts": time.time(), "duration": duration, "count": num_records
                 })
@@ -204,7 +204,7 @@ def monitor_system():
         total_cpu = sum(p.cpu_percent() for p in processes)
         total_mem = sum(p.memory_info().rss for p in processes)
 
-        redis_client = sync_redis.from_url("redis://localhost:6380/5", socket_timeout=2)
+        redis_client = sync_redis.from_url(REDIS_METRICS_CACHE_URL, socket_timeout=2)
         data_point = orjson.dumps({
             "ts": time.time(), "cpu_percent": total_cpu, "mem_rss_bytes": total_mem
         })
