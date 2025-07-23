@@ -35,10 +35,10 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "active_network": network.get("currently_used_active_network"),
             "operator": cellular.get("operator"),
             "battery_percent": power.get("battery_percent"),
-            "speed": location.get("speed"),
-            "altitude": location.get("altitude"),
-            "accuracy": location.get("accuracy"),
-            "signal_strength": cellular.get("signal_strength"),
+            "speed": location.get("speed_in_kmh"),
+            "altitude": location.get("altitude_in_meters"),
+            "accuracy": location.get("accuracy_in_meters"),
+            "signal_strength": cellular.get("signal_strength_in_dbm"),
         }
 
         feature = {

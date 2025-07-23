@@ -2,9 +2,8 @@ import sqlite3
 import os
 import sys
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DB_FILE = "hoarder_processor.db"
-DB_PATH = os.path.join(PROJECT_ROOT, DB_FILE)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from app.database import DB_PATH
 
 def initialize_database():
     try:

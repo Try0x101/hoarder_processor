@@ -17,9 +17,12 @@ def safe_int(v):
     try: return int(float(v))
     except (ValueError, TypeError, AttributeError): return None
 
-def safe_float(v):
-    try: return float(v)
-    except (ValueError, TypeError, AttributeError): return None
+def safe_float(v, precision=None):
+    try:
+        val = float(v)
+        return round(val, precision) if precision is not None else val
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 def get_wind_direction_compass(degrees: Optional[float]) -> Optional[str]:
     if degrees is None: return None
@@ -113,31 +116,22 @@ def format_timespan_human(seconds: Optional[float]) -> Optional[str]:
     return f"{years} years ago"
 
 def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    def f(key, unit, precision=0):
-        val = safe_float(data.get(key))
-        if val is None: return None
-        return f"{val:.{precision}f}{unit}"
-
-    temp_c = safe_float(data.get('temperature'))
+    temp_c = safe_float(data.get('temperature'), 1)
     precip_val = safe_float(data.get('precipitation'))
     weather_code = safe_int(data.get('code'))
-    wind_speed_ms = safe_float(data.get('wind_speed'))
+    wind_speed_ms = safe_float(data.get('wind_speed'), 1)
     precip_info = get_precipitation_info(precip_val, weather_code)
 
     formatted_bssid = format_bssid(data.get('b'))
     cellular_type = data.get('t')
     currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type
 
-    battery_percent_val = safe_float(data.get('p'))
-    capacity_mah_val = safe_float(data.get('c'))
+    battery_percent_val = safe_int(data.get('p'))
+    capacity_mah_val = safe_int(data.get('c'))
 
-    battery_percent_display = int(round(battery_percent_val)) if battery_percent_val is not None else None
-    capacity_mah_display = int(round(capacity_mah_val)) if capacity_mah_val is not None else None
-
-    leftover_capacity_str = None
-    if battery_percent_display is not None and capacity_mah_display is not None:
-        leftover_capacity_val = (battery_percent_display / 100.0) * capacity_mah_display
-        leftover_capacity_str = f"{round(leftover_capacity_val)} mAh"
+    leftover_capacity_mah = None
+    if battery_percent_val is not None and capacity_mah_val is not None:
+        leftover_capacity_mah = int(round((battery_percent_val / 100.0) * capacity_mah_val))
 
     fetch_lat = safe_float(data.get('weather_fetch_lat'))
     fetch_lon = safe_float(data.get('weather_fetch_lon'))
@@ -194,41 +188,52 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
             "cellular": {
                 "type": cellular_type,
                 "operator": data.get('o'),
-                "signal_strength": f('r', ' dBm'), "mcc": data.get('mc'), "mnc": data.get('mn'),
+                "signal_strength_in_dbm": safe_int(data.get('r')), "mcc": data.get('mc'), "mnc": data.get('mn'),
                 "cell_id": data.get('ci'), "tac": data.get('tc'),
             },
-            "bandwidth": {"download": f('d', ' Mbps', 1), "upload": f('u', ' Mbps', 1)}
+            "bandwidth": {
+                "download_in_mbps": safe_float(data.get('d'), 1),
+                "upload_in_mbps": safe_float(data.get('u'), 1)
+            }
         },
         "location": {
-            "latitude": str(safe_float(data.get('y'))) if data.get('y') is not None else None,
-            "longitude": str(safe_float(data.get('x'))) if data.get('x') is not None else None,
-            "altitude": f('a', ' m'), "accuracy": f('ac', ' m'), "speed": f('s', ' km/h'),
+            "latitude": safe_float(data.get('y')),
+            "longitude": safe_float(data.get('x')),
+            "altitude_in_meters": safe_int(data.get('a')),
+            "accuracy_in_meters": safe_int(data.get('ac')),
+            "speed_in_kmh": safe_int(data.get('s')),
         },
         "power": {
-            "battery_percent": f"{battery_percent_display}%" if battery_percent_display is not None else None,
-            "capacity_mah": f"{capacity_mah_display} mAh" if capacity_mah_display is not None else None,
-            "calculated_leftover_capacity": leftover_capacity_str
+            "battery_percent": battery_percent_val,
+            "capacity_in_mah": capacity_mah_val,
+            "calculated_leftover_capacity_in_mah": leftover_capacity_mah
         },
         "environment": {
             "weather": {
                 "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
-                "temperature": f('temperature', '°C', 1), "feels_like": f('apparent_temp', '°C', 1),
-                "assessment": get_temperature_assessment(temp_c), "humidity": f('humidity', '%'),
-                "pressure": f('pressure_msl', ' hPa', 0), "cloud_cover": f('cloud_cover', '%', 0)
+                "temperature_in_celsius": temp_c,
+                "feels_like_in_celsius": safe_float(data.get('apparent_temp'), 1),
+                "assessment": get_temperature_assessment(temp_c),
+                "humidity_percent": safe_int(data.get('humidity')),
+                "pressure_in_hpa": safe_int(data.get('pressure_msl')),
+                "cloud_cover_percent": safe_int(data.get('cloud_cover'))
             },
             "precipitation": precip_info,
             "wind": {
-                "speed": f('wind_speed', ' m/s', 1), "gusts": f('wind_gusts', ' m/s', 1),
+                "speed_in_meters_per_second": wind_speed_ms,
+                "gusts_in_meters_per_second": safe_float(data.get('wind_gusts'), 1),
                 "description": get_wind_description(wind_speed_ms),
                 "direction": get_wind_direction_compass(safe_float(data.get('wind_direction')))
             },
             "marine": {
                 "wave": {
-                    "height": f('marine_wave_height', ' m', 2), "period": f('marine_wave_period', ' s', 1),
+                    "height_in_meters": safe_float(data.get('marine_wave_height'), 2),
+                    "period_in_seconds": safe_float(data.get('marine_wave_period'), 1),
                     "direction": get_wind_direction_compass(safe_float(data.get('marine_wave_direction')))
                 },
                 "swell": {
-                    "height": f('marine_swell_wave_height', ' m', 2), "period": f('marine_swell_wave_period', ' s', 1),
+                    "height_in_meters": safe_float(data.get('marine_swell_wave_height'), 2),
+                    "period_in_seconds": safe_float(data.get('marine_swell_wave_period'), 1),
                     "direction": get_wind_direction_compass(safe_float(data.get('marine_swell_wave_direction')))
                 }
             }

@@ -61,7 +61,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 if simple_base_state:
                     old_weather_diag = simple_base_state.get("diagnostics", {}).get("weather")
                     if 't' not in flat_data:
-                        previous_type = simple_base_state.get("network", {}).get("type")
+                        previous_type = simple_base_state.get("network", {}).get("cellular", {}).get("type")
                         if previous_type: flat_data['t'] = previous_type
                 
                 raw_bssid = flat_data.get('b')

@@ -13,15 +13,15 @@ router = APIRouter(prefix="/data", tags=["Data Access"])
 KEY_ORDERS = {
     'data': ['identity', 'location', 'network', 'power', 'environment'],
     'identity': ['device_name', 'device_id'],
-    'location': ['latitude', 'longitude', 'altitude', 'accuracy', 'speed'],
+    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh'],
     'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'bandwidth', 'cellular'],
-    'bandwidth': ['download', 'upload'],
-    'cellular': ['type', 'operator', 'signal_strength', 'mcc', 'mnc', 'cell_id', 'tac'],
-    'power': ['battery_percent', 'capacity_mah', 'calculated_leftover_capacity'],
+    'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
+    'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'mcc', 'mnc', 'cell_id', 'tac'],
+    'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah'],
     'environment': ['weather', 'precipitation', 'wind', 'marine'],
-    'weather': ['temperature', 'feels_like', 'description', 'assessment', 'humidity', 'pressure', 'cloud_cover'],
+    'weather': ['temperature_in_celsius', 'feels_like_in_celsius', 'description', 'assessment', 'humidity_percent', 'pressure_in_hpa', 'cloud_cover_percent'],
     'precipitation': ['type', 'intensity', 'summary'],
-    'wind': ['speed', 'direction', 'gusts', 'description'],
+    'wind': ['speed_in_meters_per_second', 'gusts_in_meters_per_second', 'direction', 'description'],
 }
 
 def _apply_custom_sorting(data: Any, level_key: str = 'data') -> Any:
