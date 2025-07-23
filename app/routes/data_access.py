@@ -1,6 +1,7 @@
 import aiosqlite
 import os
 import orjson
+import datetime
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
@@ -13,9 +14,9 @@ KEY_ORDERS = {
     'data': ['identity', 'location', 'network', 'power', 'environment'],
     'identity': ['device_name', 'device_id'],
     'location': ['latitude', 'longitude', 'altitude', 'accuracy', 'speed'],
-    'network': ['active_network', 'type', 'operator', 'source_ip', 'wifi_bssid', 'bandwidth', 'cellular'],
+    'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'bandwidth', 'cellular'],
     'bandwidth': ['download', 'upload'],
-    'cellular': ['signal_strength', 'mcc', 'mnc', 'cell_id', 'tac'],
+    'cellular': ['type', 'operator', 'signal_strength', 'mcc', 'mnc', 'cell_id', 'tac'],
     'power': ['battery_percent', 'capacity_mah', 'calculated_leftover_capacity'],
     'environment': ['weather', 'precipitation', 'wind', 'marine'],
     'weather': ['temperature', 'feels_like', 'description', 'assessment', 'humidity', 'pressure', 'cloud_cover'],
@@ -200,11 +201,57 @@ async def get_latest_device_data(request: Request, device_id: str):
             freshness_payload = orjson.loads(row['enriched_payload'])
             data_payload, freshness_info = parse_freshness_payload(freshness_payload)
 
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            if 'diagnostics' in freshness_info and 'weather' in freshness_info['diagnostics']:
+                weather_freshness = freshness_info['diagnostics']['weather']
+                weather_freshness.pop('weather_data_old_age_in_seconds', None)
+                weather_freshness.pop('weather_distance_from_actual_location_age_in_seconds', None)
+                weather_freshness.pop('weather_request_timestamp_location_time_age_in_seconds', None)
+                
+                weather_ts_str = data_payload.get('diagnostics', {}).get('weather', {}).get('weather_request_timestamp_utc')
+                if weather_ts_str:
+                    try:
+                        weather_dt = datetime.datetime.strptime(weather_ts_str, '%d.%m.%Y %H:%M:%S UTC')
+                        weather_dt = weather_dt.replace(tzinfo=datetime.timezone.utc)
+                        actual_age_sec = (now_utc - weather_dt).total_seconds()
+                        weather_freshness['weather_data_actual_age_in_seconds'] = round(actual_age_sec)
+                    except (ValueError, TypeError):
+                        pass
+                
+                weather_freshness.pop('weather_request_timestamp_utc_age_in_seconds', None)
+
+                if not weather_freshness:
+                    freshness_info['diagnostics'].pop('weather', None)
+
             diagnostics_block = data_payload.pop("diagnostics", {})
             diagnostics_block["data_freshness"] = cleanup_empty(freshness_info)
             
             sorted_data = _apply_custom_sorting(data_payload)
-            sorted_data['diagnostics'] = sort_dict_recursive(diagnostics_block)
+            
+            diag_order = ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness']
+            weather_diag_order = ['weather_distance_from_actual_location', 'weather_fetch_location', 'weather_data_old', 'weather_request_timestamp_location_time', 'weather_request_timestamp_utc']
+
+            sorted_diagnostics = {}
+            for key in diag_order:
+                if key in diagnostics_block:
+                    value = diagnostics_block[key]
+                    if key == 'weather' and isinstance(value, dict):
+                        sorted_weather = {}
+                        for w_key in weather_diag_order:
+                            if w_key in value:
+                                sorted_weather[w_key] = value[w_key]
+                        for w_key in sorted(value):
+                            if w_key not in sorted_weather:
+                                sorted_weather[w_key] = value[w_key]
+                        sorted_diagnostics[key] = sorted_weather
+                    else:
+                        sorted_diagnostics[key] = sort_dict_recursive(value)
+
+            for key in sorted(diagnostics_block):
+                if key not in sorted_diagnostics:
+                    sorted_diagnostics[key] = sort_dict_recursive(diagnostics_block[key])
+            
+            sorted_data['diagnostics'] = cleanup_empty(sorted_diagnostics)
             
             return {
                 "request": {"self_url": f"{base_url}/data/latest/{device_id}"},

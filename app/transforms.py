@@ -126,14 +126,18 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
     formatted_bssid = format_bssid(data.get('b'))
     cellular_type = data.get('t')
-    active_network = "Wi-Fi" if formatted_bssid else cellular_type
+    currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type
 
     battery_percent_val = safe_float(data.get('p'))
     capacity_mah_val = safe_float(data.get('c'))
+
+    battery_percent_display = int(round(battery_percent_val)) if battery_percent_val is not None else None
+    capacity_mah_display = int(round(capacity_mah_val)) if capacity_mah_val is not None else None
+
     leftover_capacity_str = None
-    if battery_percent_val is not None and capacity_mah_val is not None:
-        leftover_capacity_val = (battery_percent_val / 100.0) * capacity_mah_val
-        leftover_capacity_str = f"{leftover_capacity_val:.0f} mAh"
+    if battery_percent_display is not None and capacity_mah_display is not None:
+        leftover_capacity_val = (battery_percent_display / 100.0) * capacity_mah_display
+        leftover_capacity_str = f"{round(leftover_capacity_val)} mAh"
 
     fetch_lat = safe_float(data.get('weather_fetch_lat'))
     fetch_lon = safe_float(data.get('weather_fetch_lon'))
@@ -184,10 +188,12 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     transformed = {
         "identity": {"device_id": data.get("device_id"), "device_name": data.get('n')},
         "network": {
-            "active_network": active_network,
-            "source_ip": data.get('client_ip'), "type": cellular_type, "operator": data.get('o'),
+            "currently_used_active_network": currently_used_active_network,
+            "source_ip": data.get('client_ip'),
             "wifi_bssid": formatted_bssid,
             "cellular": {
+                "type": cellular_type,
+                "operator": data.get('o'),
                 "signal_strength": f('r', ' dBm'), "mcc": data.get('mc'), "mnc": data.get('mn'),
                 "cell_id": data.get('ci'), "tac": data.get('tc'),
             },
@@ -199,8 +205,8 @@ def transform_payload(data: Dict[str, Any]) -> Dict[str, Any]:
             "altitude": f('a', ' m'), "accuracy": f('ac', ' m'), "speed": f('s', ' km/h'),
         },
         "power": {
-            "battery_percent": f('p', '%'),
-            "capacity_mah": f('c', ' mAh'),
+            "battery_percent": f"{battery_percent_display}%" if battery_percent_display is not None else None,
+            "capacity_mah": f"{capacity_mah_display} mAh" if capacity_mah_display is not None else None,
             "calculated_leftover_capacity": leftover_capacity_str
         },
         "environment": {

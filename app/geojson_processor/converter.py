@@ -23,6 +23,7 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         identity = payload.get("identity", {})
         network = payload.get("network", {})
         power = payload.get("power", {})
+        cellular = network.get("cellular", {})
 
         properties = {
             "latitude": lat,
@@ -31,13 +32,13 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "device_id": identity.get("device_id"),
             "device_name": identity.get("device_name"),
             "timestamp_utc": db_row["calculated_event_timestamp"],
-            "active_network": network.get("active_network"),
-            "operator": network.get("operator"),
+            "active_network": network.get("currently_used_active_network"),
+            "operator": cellular.get("operator"),
             "battery_percent": power.get("battery_percent"),
             "speed": location.get("speed"),
             "altitude": location.get("altitude"),
             "accuracy": location.get("accuracy"),
-            "signal_strength": network.get("cellular", {}).get("signal_strength"),
+            "signal_strength": cellular.get("signal_strength"),
         }
 
         feature = {
