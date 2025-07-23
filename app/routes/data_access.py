@@ -2,13 +2,18 @@ import aiosqlite
 import os
 import orjson
 import datetime
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
 from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness, sort_dict_recursive
 from app.database import DB_PATH
+from app.security import get_current_user
 
-router = APIRouter(prefix="/data", tags=["Data Access"])
+router = APIRouter(
+    prefix="/data", 
+    tags=["Data Access"],
+    dependencies=[Depends(get_current_user)]
+)
 
 KEY_ORDERS = {
     'data': ['identity', 'location', 'network', 'power', 'environment'],

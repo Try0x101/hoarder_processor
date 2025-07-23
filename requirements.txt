@@ -9,3 +9,5 @@ timezonefinderL
 pytz
 aiofiles
 psutil
+authlib
+itsdangerous
