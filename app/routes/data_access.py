@@ -4,10 +4,41 @@ import orjson
 from fastapi import APIRouter, Request, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
-from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness
+from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness, sort_dict_recursive
 from app.database import DB_PATH
 
 router = APIRouter(prefix="/data", tags=["Data Access"])
+
+KEY_ORDERS = {
+    'data': ['identity', 'location', 'network', 'power', 'environment'],
+    'identity': ['device_name', 'device_id'],
+    'location': ['latitude', 'longitude', 'altitude', 'accuracy', 'speed'],
+    'network': ['active_network', 'type', 'operator', 'source_ip', 'wifi_bssid', 'bandwidth', 'cellular'],
+    'bandwidth': ['download', 'upload'],
+    'cellular': ['signal_strength', 'mcc', 'mnc', 'cell_id', 'tac'],
+    'power': ['battery_percent', 'capacity_mah', 'calculated_leftover_capacity'],
+    'environment': ['weather', 'precipitation', 'wind', 'marine'],
+    'weather': ['temperature', 'feels_like', 'description', 'assessment', 'humidity', 'pressure', 'cloud_cover'],
+    'precipitation': ['type', 'intensity', 'summary'],
+    'wind': ['speed', 'direction', 'gusts', 'description'],
+}
+
+def _apply_custom_sorting(data: Any, level_key: str = 'data') -> Any:
+    if not isinstance(data, dict):
+        return [_apply_custom_sorting(item, level_key) for item in data] if isinstance(data, list) else data
+
+    order = KEY_ORDERS.get(level_key, [])
+    sorted_dict = {}
+
+    for key in order:
+        if key in data:
+            sorted_dict[key] = _apply_custom_sorting(data[key], key)
+            
+    remaining_keys = sorted([k for k in data if k not in order])
+    for key in remaining_keys:
+        sorted_dict[key] = _apply_custom_sorting(data[key], key)
+
+    return sorted_dict
 
 def build_base_url(request: Request) -> str:
     return f"{request.url.scheme}://{request.url.netloc}"
@@ -106,7 +137,7 @@ async def get_device_history(
             data_with_deltas.append({
                 "id": current_row['id'],
                 "original_ingest_id": current_row.get('original_ingest_id'),
-                "changes": cleanup_empty(changes),
+                "changes": _apply_custom_sorting(cleanup_empty(changes)),
                 "diagnostics": cleanup_empty(event_diagnostics)
             })
 
@@ -169,9 +200,11 @@ async def get_latest_device_data(request: Request, device_id: str):
             freshness_payload = orjson.loads(row['enriched_payload'])
             data_payload, freshness_info = parse_freshness_payload(freshness_payload)
 
-            if "diagnostics" not in data_payload:
-                data_payload["diagnostics"] = {}
-            data_payload["diagnostics"]["data_freshness"] = cleanup_empty(freshness_info)
+            diagnostics_block = data_payload.pop("diagnostics", {})
+            diagnostics_block["data_freshness"] = cleanup_empty(freshness_info)
+            
+            sorted_data = _apply_custom_sorting(data_payload)
+            sorted_data['diagnostics'] = sort_dict_recursive(diagnostics_block)
             
             return {
                 "request": {"self_url": f"{base_url}/data/latest/{device_id}"},
@@ -179,7 +212,7 @@ async def get_latest_device_data(request: Request, device_id: str):
                     "root": f"{base_url}/",
                     "history": f"{base_url}/data/history?device_id={device_id}&limit=50"
                 },
-                "data": data_payload
+                "data": sorted_data
             }
     except HTTPException:
         raise

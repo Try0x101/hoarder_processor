@@ -132,6 +132,13 @@ def cleanup_empty(d: Dict) -> Dict:
         if v is not None and v != ''
     }
 
+def sort_dict_recursive(d: Any) -> Any:
+    if not isinstance(d, (dict, list)):
+        return d
+    if isinstance(d, list):
+        return [sort_dict_recursive(v) for v in d]
+    return {k: sort_dict_recursive(v) for k, v in sorted(d.items())}
+
 def calculate_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
     if None in [lat1, lon1, lat2, lon2]:
