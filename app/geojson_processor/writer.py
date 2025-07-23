@@ -55,9 +55,6 @@ class GeoJSONManager:
                     
                     await self._file_handle.seek(size - 2, os.SEEK_SET)
                     await self._file_handle.truncate()
-
-                    if not is_empty_array:
-                        await self._file_handle.write(b',')
                     
                     self._is_first_feature = is_empty_array
                     return

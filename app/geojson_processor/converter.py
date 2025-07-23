@@ -1,4 +1,5 @@
 import orjson
+import datetime
 from typing import Dict, Any, Optional
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -6,6 +7,16 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
     try:
         return float(value)
+    except (ValueError, TypeError):
+        return None
+
+def _to_unix_timestamp(ts_str: Optional[str]) -> Optional[int]:
+    if not ts_str:
+        return None
+    try:
+        naive_dt = datetime.datetime.fromisoformat(ts_str.replace(" ", "T"))
+        aware_dt = naive_dt.replace(tzinfo=datetime.timezone.utc)
+        return int(aware_dt.timestamp())
     except (ValueError, TypeError):
         return None
 
@@ -31,7 +42,7 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "internal_id": db_row["id"],
             "device_id": identity.get("device_id"),
             "device_name": identity.get("device_name"),
-            "timestamp_utc": db_row["calculated_event_timestamp"],
+            "timestamp": _to_unix_timestamp(db_row.get("calculated_event_timestamp")),
             "active_network": network.get("currently_used_active_network"),
             "operator": cellular.get("operator"),
             "battery_percent": power.get("battery_percent"),
