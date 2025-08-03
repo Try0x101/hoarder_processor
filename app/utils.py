@@ -84,19 +84,28 @@ def _convert_to_freshness(payload: Dict, timestamp: str) -> Dict:
 
 def update_freshness_from_full_state(base_freshness: dict, new_full_simple: dict, new_ts: str) -> dict:
     new_freshness = {}
-    for key, new_simple_value in new_full_simple.items():
+    all_keys = set(base_freshness.keys()) | set(new_full_simple.keys())
+
+    for key in all_keys:
+        new_simple_value = new_full_simple.get(key)
         base_node = base_freshness.get(key)
+
+        if key not in new_full_simple:
+            continue
 
         if isinstance(new_simple_value, dict):
             base_sub_freshness = base_node if isinstance(base_node, dict) and "value" not in base_node else {}
-            new_freshness[key] = update_freshness_from_full_state(base_sub_freshness, new_simple_value, new_ts)
+            updated_sub_freshness = update_freshness_from_full_state(base_sub_freshness, new_simple_value, new_ts)
+            if updated_sub_freshness:
+                new_freshness[key] = updated_sub_freshness
         else:
             old_value = base_node.get("value") if isinstance(base_node, dict) else None
             
-            if base_node and old_value == new_simple_value:
-                new_freshness[key] = base_node
-            else:
+            if not base_node or old_value != new_simple_value:
                 new_freshness[key] = {"value": new_simple_value, "ts": new_ts}
+            else:
+                new_freshness[key] = base_node
+                
     return new_freshness
 
 def parse_freshness_payload(freshness_payload: Dict) -> Tuple[Dict, Dict]:
@@ -125,7 +134,7 @@ def parse_freshness_payload(freshness_payload: Dict) -> Tuple[Dict, Dict]:
                     freshness_info[new_key] = -1
             else:
                 sub_data, sub_freshness = parse_freshness_payload(node)
-                if sub_data:
+                if sub_data or key in freshness_payload:
                     data_payload[key] = sub_data
                 if sub_freshness:
                     freshness_info[key] = sub_freshness
@@ -173,7 +182,7 @@ def deep_merge(source: dict, destination: dict) -> dict:
 def cleanup_empty(d: Any) -> Any:
     if isinstance(d, dict):
         temp_dict = {k: cleanup_empty(v) for k, v in d.items()}
-        return {k: v for k, v in temp_dict.items() if v is not None and v != '' and v != [] and v != {}}
+        return {k: v for k, v in temp_dict.items() if v != '' and v != [] and v != {}}
     if isinstance(d, list):
         temp_list = [cleanup_empty(item) for item in d]
         return [v for v in temp_list if v is not None and v != '' and v != [] and v != {}]
@@ -209,9 +218,12 @@ def diff_states(new_state: dict, old_state: dict) -> dict:
         old_val = old_state.get(key)
 
         if key not in old_state:
-            delta[key] = new_val
+            if new_val is not None:
+                delta[key] = new_val
         elif key not in new_state:
             delta[key] = None
+        elif new_val is None and old_val is not None:
+             delta[key] = None
         elif isinstance(new_val, dict) and isinstance(old_val, dict):
             sub_delta = diff_states(new_val, old_val)
             if sub_delta:
@@ -315,17 +327,22 @@ def group_and_rename_app_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     
     s = settings
     
-    PERMISSION_MAP = {0: "Not Granted", 1: "Foreground", 2: "Background"}
+    PERMISSION_MAP = {0: "Denied", 1: "Foreground (While-in-use)", 2: "Background (All the time)"}
     BOOL_PERMISSION_MAP = {0: "Not Granted", 1: "Granted"}
-    SENSOR_HEALTH_MAP = {1: "Not Available", 2: "OK", 3: "Error", 4: "Disabled"}
+    SENSOR_HEALTH_MAP = {1: "Not Available", 2: "OK", 3: "Stale", 4: "Quarantined"}
     MOTION_DETECTOR_MAP = {2: "OK", 3: "Stale"}
     BATTERY_OPTIMIZATION_MAP = {0: "Unrestricted", 1: "Optimized", 2: "Restricted"}
     PRECISION_MAP = {
-        'x1': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm"}, 'xa': {0:"Smart", 1:"Max", 2:"2m", 3:"10m", 4:"25m"},
-        'xb': {0:"Smart", 1:"Max", 2:"2%", 3:"5%", 4:"10%"}, 'xc': {0:"Smart", 1:"Max", 2:"10", 3:"100", 4:"1000"},
-        'xg': {0:"Smart", 1:"Max", 2:"20m", 3:"100m"}, 'xl': {0:"Smart", 1:"Max", 2:"1-lux", 3:"10-lux", 4:"100-lux"},
-        'xn': {0:"Smart", 1:"Max", 2:"1Mbps", 3:"2Mbps", 4:"5Mbps"}, 'xp': {0:"Smart", 1:"Max", 2:"0.1hPa", 3:"1hPa", 4:"10hPa"},
-        'xr': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm", 4:"10dBm"}, 'xs': {0:"Smart", 1:"Max", 2:"1kmh", 3:"3kmh", 4:"5kmh"}
+        'x1': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm"},
+        'xa': {0:"Smart", 1:"Max", 2:"2m", 3:"10m", 4:"25m", 5:"50m", 6:"100m"},
+        'xb': {0:"Smart", 1:"Max", 2:"2%", 3:"5%", 4:"10%"},
+        'xc': {0:"Smart", 1:"Max", 2:"10 steps", 3:"100 steps", 4:"1000 steps"},
+        'xg': {0:"Smart", 1:"Max", 2:"20m", 3:"100m", 4:"1km", 5:"10km"},
+        'xl': {0:"Smart", 1:"Max", 2:"1-lux", 3:"10-lux", 4:"100-lux"},
+        'xn': {0:"Smart", 1:"Max", 2:"1Mbps", 3:"2Mbps", 4:"5Mbps"},
+        'xp': {0:"Smart", 1:"Max", 2:"0.1hPa", 3:"1hPa", 4:"10hPa"},
+        'xr': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm", 4:"10dBm"},
+        'xs': {0:"Smart", 1:"Max", 2:"1km/h", 3:"3km/h", 4:"5km/h", 5:"10km/h"}
     }
     
     grouped = {

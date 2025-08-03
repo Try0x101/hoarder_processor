@@ -24,7 +24,7 @@ CELLULAR_TYPE_MAP = {
     5: "NR(5G)", 6: "CDMA", 7: "IDEN", 0: "Other"
 }
 CHARGING_STATE_MAP = {0: "Not Charging", 1: "AC", 2: "USB", 3: "Wireless", 4: "Full"}
-DATA_ACTIVITY_MAP = {1: "None", 2: "In", 3: "Out", 4: "In/Out"}
+DATA_ACTIVITY_MAP = {0: "None", 1: "In", 2: "Out", 3: "In/Out"}
 WIFI_STANDARD_MAP = {1: "Other", 4: "Wi-Fi 4", 5: "Wi-Fi 5", 6: "Wi-Fi 6"}
 SYSTEM_AUDIO_MAP = {0: "Idle", 1: "Media", 2: "In Call"}
 PHONE_ACTIVITY_MAP = {0: "Stable/Upside Down", 1: "Stable", 2: "Moving"}
@@ -117,35 +117,33 @@ def format_timespan_human(seconds: Optional[float]) -> Optional[str]:
         return f"{val} year{'s' if val != 1 else ''} ago"
     return f"{years} years ago"
 
+def _get_val_or_base(data, key, base_state, path, error_val=None, transform_func=None):
+    if key in data:
+        val = data[key]
+        if val == error_val:
+            return None
+        return transform_func(val) if transform_func else val
+    return get_nested(base_state, path)
+
 def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[str, Any]:
     lat, lon, precision = None, None, None
     if 'g' in data:
-        decoded = decode_geohash(data.get('g'))
-        if decoded:
-            lat, lon, precision = decoded
+        geohash_val = data['g']
+        if geohash_val != "":
+            decoded = decode_geohash(geohash_val)
+            if decoded:
+                lat, lon, precision = decoded
     else:
         lat = get_nested(base_state, ['location', 'latitude'])
         lon = get_nested(base_state, ['location', 'longitude'])
         precision = get_nested(base_state, ['location', 'coordinate_precision'])
 
-    cellular_type_str = CELLULAR_TYPE_MAP.get(data['t']) if 't' in data else get_nested(base_state, ['network', 'cellular', 'type'])
-    charging_state = CHARGING_STATE_MAP.get(data['cs']) if 'cs' in data else get_nested(base_state, ['power', 'charging_state'])
-    data_activity = DATA_ACTIVITY_MAP.get(data['da']) if 'da' in data else get_nested(base_state, ['device_state', 'data_activity'])
-    system_audio_state = SYSTEM_AUDIO_MAP.get(data['au']) if 'au' in data else get_nested(base_state, ['device_state', 'system_audio_state'])
-    phone_activity_state = PHONE_ACTIVITY_MAP.get(data['pa']) if 'pa' in data else get_nested(base_state, ['device_state', 'phone_activity_state'])
-    wifi_standard = WIFI_STANDARD_MAP.get(data['wt']) if 'wt' in data else get_nested(base_state, ['wifi_details', 'wifi_standard'])
-    
-    if 'b' in data:
-        formatted_bssid = decode_bssid_base64(data.get('b'))
-    elif 't' in data or 'r' in data or 'ci' in data:
-        formatted_bssid = None
-    else:
-        formatted_bssid = get_nested(base_state, ['network', 'wifi_bssid'])
-    
+    cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], -1, lambda v: CELLULAR_TYPE_MAP.get(v))
+    formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi_bssid'], "", decode_bssid_base64)
     currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type_str
-
-    battery_percent_val = safe_int(data.get('p', get_nested(base_state, ['power', 'battery_percent'])))
-    capacity_mah_val = safe_int(data.get('c', get_nested(base_state, ['power', 'capacity_in_mah'], 0) // 100)) * 100 if data.get('c') is not None or get_nested(base_state, ['power', 'capacity_in_mah']) is not None else None
+    
+    battery_percent_val = _get_val_or_base(data, 'p', base_state, ['power', 'battery_percent'], None, safe_int)
+    capacity_mah_val = _get_val_or_base(data, 'c', base_state, ['power', 'capacity_in_mah'], 0, lambda v: safe_int(v) * 100)
     leftover_capacity_mah = None
     if battery_percent_val is not None and capacity_mah_val is not None and capacity_mah_val > 0:
         leftover_capacity_mah = int(round((battery_percent_val / 100.0) * capacity_mah_val))
@@ -205,40 +203,40 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
     transformed = {
         "identity": {
             "device_id": data.get("device_id"), 
-            "device_name": data.get('n', get_nested(base_state, ['identity', 'device_name']))
+            "device_name": _get_val_or_base(data, 'n', base_state, ['identity', 'device_name'])
         },
         "network": {
             "currently_used_active_network": currently_used_active_network,
-            "source_ip": data.get('client_ip', get_nested(base_state, ['network', 'source_ip'])),
+            "source_ip": _get_val_or_base(data, 'client_ip', base_state, ['network', 'source_ip']),
             "wifi_bssid": formatted_bssid,
-            "wifi_name_ssid": data.get('wn', get_nested(base_state, ['network', 'wifi_name_ssid'])),
+            "wifi_name_ssid": _get_val_or_base(data, 'wn', base_state, ['network', 'wifi_name_ssid'], ""),
             "cellular": {
                 "type": cellular_type_str, 
-                "operator": data.get('o', get_nested(base_state, ['network', 'cellular', 'operator'])),
-                "signal_strength_in_dbm": -safe_int(data.get('r')) if 'r' in data else get_nested(base_state, ['network', 'cellular', 'signal_strength_in_dbm']),
-                "signal_quality": data.get('rq', get_nested(base_state, ['network', 'cellular', 'signal_quality'])), 
-                "mcc": data.get('mc', get_nested(base_state, ['network', 'cellular', 'mcc'])), 
-                "mnc": data.get('mn', get_nested(base_state, ['network', 'cellular', 'mnc'])),
-                "cell_id": decode_base62(data.get('ci')) if 'ci' in data else get_nested(base_state, ['network', 'cellular', 'cell_id']),
-                "tac": data.get('tc', get_nested(base_state, ['network', 'cellular', 'tac'])), 
-                "timing_advance": data.get('ta', get_nested(base_state, ['network', 'cellular', 'timing_advance']))
+                "operator": _get_val_or_base(data, 'o', base_state, ['network', 'cellular', 'operator'], ""),
+                "signal_strength_in_dbm": _get_val_or_base(data, 'r', base_state, ['network', 'cellular', 'signal_strength_in_dbm'], 0, lambda v: -safe_int(v)),
+                "signal_quality": _get_val_or_base(data, 'rq', base_state, ['network', 'cellular', 'signal_quality'], 0), 
+                "mcc": _get_val_or_base(data, 'mc', base_state, ['network', 'cellular', 'mcc'], -1), 
+                "mnc": _get_val_or_base(data, 'mn', base_state, ['network', 'cellular', 'mnc'], ""),
+                "cell_id": _get_val_or_base(data, 'ci', base_state, ['network', 'cellular', 'cell_id'], "", decode_base62),
+                "tac": _get_val_or_base(data, 'tc', base_state, ['network', 'cellular', 'tac'], -1), 
+                "timing_advance": _get_val_or_base(data, 'ta', base_state, ['network', 'cellular', 'timing_advance'], -1)
             },
             "bandwidth": {
-                "download_in_mbps": safe_float(data.get('d', get_nested(base_state, ['network', 'bandwidth', 'download_in_mbps'])), 1),
-                "upload_in_mbps": safe_float(data.get('u', get_nested(base_state, ['network', 'bandwidth', 'upload_in_mbps'])), 1)
+                "download_in_mbps": _get_val_or_base(data, 'd', base_state, ['network', 'bandwidth', 'download_in_mbps'], 0, lambda v: safe_float(v, 1)),
+                "upload_in_mbps": _get_val_or_base(data, 'u', base_state, ['network', 'bandwidth', 'upload_in_mbps'], 0, lambda v: safe_float(v, 1))
             }
         },
         "location": {
             "latitude": lat, "longitude": lon, "coordinate_precision": precision,
-            "altitude_in_meters": safe_int(data.get('a', get_nested(base_state, ['location', 'altitude_in_meters']))), 
-            "accuracy_in_meters": safe_int(data.get('ac', get_nested(base_state, ['location', 'accuracy_in_meters']))),
-            "speed_in_kmh": safe_int(data.get('s', get_nested(base_state, ['location', 'speed_in_kmh']))),
+            "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], -1, safe_int), 
+            "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], -1, safe_int),
+            "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], -1, safe_int),
         },
         "power": {
             "battery_percent": battery_percent_val, "capacity_in_mah": capacity_mah_val,
             "calculated_leftover_capacity_in_mah": leftover_capacity_mah,
-            "charging_state": charging_state,
-            "power_save_mode": data.get('pm') == 1 if 'pm' in data else get_nested(base_state, ['power', 'power_save_mode'])
+            "charging_state": _get_val_or_base(data, 'cs', base_state, ['power', 'charging_state'], None, lambda v: CHARGING_STATE_MAP.get(v)),
+            "power_save_mode": _get_val_or_base(data, 'pm', base_state, ['power', 'power_save_mode'], None, lambda v: v == 1)
         },
         "environment": {
             "weather": {
@@ -259,27 +257,27 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
             }
         },
         "device_state": {
-            "screen_on": data.get('sc') == 1 if 'sc' in data else get_nested(base_state, ['device_state', 'screen_on']),
-            "vpn_active": data.get('vp') == 1 if 'vp' in data else get_nested(base_state, ['device_state', 'vpn_active']),
-            "network_metered": data.get('nm') == 1 if 'nm' in data else get_nested(base_state, ['device_state', 'network_metered']),
-            "data_activity": data_activity,
-            "system_audio_state": system_audio_state,
-            "camera_active": data.get('ca') == 1 if 'ca' in data else get_nested(base_state, ['device_state', 'camera_active']),
-            "flashlight_on": data.get('fl') == 1 if 'fl' in data else get_nested(base_state, ['device_state', 'flashlight_on']),
-            "phone_activity_state": phone_activity_state
+            "screen_on": _get_val_or_base(data, 'sc', base_state, ['device_state', 'screen_on'], None, lambda v: v == 1),
+            "vpn_active": _get_val_or_base(data, 'vp', base_state, ['device_state', 'vpn_active'], None, lambda v: v == 1),
+            "network_metered": _get_val_or_base(data, 'nm', base_state, ['device_state', 'network_metered'], None, lambda v: v == 1),
+            "data_activity": _get_val_or_base(data, 'da', base_state, ['device_state', 'data_activity'], -1, lambda v: DATA_ACTIVITY_MAP.get(v)),
+            "system_audio_state": _get_val_or_base(data, 'au', base_state, ['device_state', 'system_audio_state'], None, lambda v: SYSTEM_AUDIO_MAP.get(v)),
+            "camera_active": _get_val_or_base(data, 'ca', base_state, ['device_state', 'camera_active'], None, lambda v: v == 1),
+            "flashlight_on": _get_val_or_base(data, 'fl', base_state, ['device_state', 'flashlight_on'], None, lambda v: v == 1),
+            "phone_activity_state": _get_val_or_base(data, 'pa', base_state, ['device_state', 'phone_activity_state'], -1, lambda v: PHONE_ACTIVITY_MAP.get(v))
         },
         "sensors": {
-            "device_temperature_celsius": data.get('dt', get_nested(base_state, ['sensors', 'device_temperature_celsius'])), 
-            "ambient_light_level": data.get('lx', get_nested(base_state, ['sensors', 'ambient_light_level'])),
-            "barometer_hpa": data.get('pr', get_nested(base_state, ['sensors', 'barometer_hpa'])), 
-            "steps_since_boot": data.get('st', get_nested(base_state, ['sensors', 'steps_since_boot'])),
-            "proximity_near": data.get('px') == 0 if 'px' in data else get_nested(base_state, ['sensors', 'proximity_near']),
+            "device_temperature_celsius": _get_val_or_base(data, 'dt', base_state, ['sensors', 'device_temperature_celsius']), 
+            "ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'ambient_light_level'], -1),
+            "barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'barometer_hpa'], 0), 
+            "steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'steps_since_boot'], -1),
+            "proximity_near": _get_val_or_base(data, 'px', base_state, ['sensors', 'proximity_near'], -1, lambda v: v == 0),
         },
         "wifi_details": {
-            "wifi_frequency_channel": data.get('wf', get_nested(base_state, ['wifi_details', 'wifi_frequency_channel'])),
-            "wifi_rssi_dbm": -safe_int(data.get('wr')) if 'wr' in data else get_nested(base_state, ['wifi_details', 'wifi_rssi_dbm']),
-            "wifi_link_speed_quality_index": data.get('ws', get_nested(base_state, ['wifi_details', 'wifi_link_speed_quality_index'])),
-            "wifi_standard": wifi_standard
+            "wifi_frequency_channel": _get_val_or_base(data, 'wf', base_state, ['wifi_details', 'wifi_frequency_channel'], 0),
+            "wifi_rssi_dbm": _get_val_or_base(data, 'wr', base_state, ['wifi_details', 'wifi_rssi_dbm'], 0, lambda v: -safe_int(v)),
+            "wifi_link_speed_quality_index": _get_val_or_base(data, 'ws', base_state, ['wifi_details', 'wifi_link_speed_quality_index'], -1),
+            "wifi_standard": _get_val_or_base(data, 'wt', base_state, ['wifi_details', 'wifi_standard'], -1, lambda v: WIFI_STANDARD_MAP.get(v))
         },
         "diagnostics": {
             "ingest_request_id": data.get("request_id"), "weather": weather_diag,

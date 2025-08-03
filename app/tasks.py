@@ -79,18 +79,16 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     request_size_bytes = len(orjson.dumps(record))
                     flat_data = prepare_flat_data(record)
                     
-                    base_freshness_payload, last_known_ts = await get_latest_state_for_device(db, device_id)
+                    base_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
                     current_record_ts = flat_data.get("calculated_event_timestamp")
 
                     if not current_record_ts: continue
-                    if last_known_ts and current_record_ts <= last_known_ts: continue
 
                     simple_base_state = reconstruct_from_freshness(base_freshness_payload) if base_freshness_payload else {}
                     
                     flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
 
                     new_full_simple_state = transform_payload(flat_data, simple_base_state)
-                    new_full_simple_state = cleanup_empty(new_full_simple_state)
                     
                     latest_freshness_payload = update_freshness_from_full_state(
                         base_freshness_payload or {},

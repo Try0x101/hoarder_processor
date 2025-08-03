@@ -22,7 +22,7 @@ router = APIRouter(
 KEY_ORDERS = {
     'data': ['identity', 'location', 'network', 'power', 'environment', 'device_state', 'sensors', 'wifi_details', 'diagnostics', 'app_settings'],
     'identity': ['device_name', 'device_id'],
-    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh'],
+    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'coordinate_precision'],
     'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'wifi_name_ssid', 'bandwidth', 'cellular'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
     'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'signal_quality', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],
@@ -128,48 +128,42 @@ async def get_device_history(
 
     history_rows = await get_enriched_history(device_id, limit, cursor_ts, cursor_id)
     
-    records_to_process = history_rows[:limit]
+    processed_payloads = []
+    for row in history_rows:
+        payload = orjson.loads(row['enriched_payload'])
+        
+        if 'app_settings' in payload:
+            payload['app_settings'] = group_and_rename_app_settings(payload.get('app_settings', {}))
+        
+        precision = get_nested(payload, ['location', 'coordinate_precision'])
+        if precision is not None and 'location' in payload and payload.get('location'):
+            location = payload['location']
+            if 'latitude' in location and location['latitude'] is not None:
+                location['latitude'] = round(location['latitude'], precision)
+            if 'longitude' in location and location['longitude'] is not None:
+                location['longitude'] = round(location['longitude'], precision)
+        
+        processed_payloads.append(payload)
+
     data_with_deltas = []
-    if records_to_process:
-        for i, current_row in enumerate(records_to_process):
-            current_payload = orjson.loads(current_row['enriched_payload'])
-            
-            previous_payload = None
-            previous_row_index = i + 1
-            if previous_row_index < len(history_rows):
-                previous_payload = orjson.loads(history_rows[previous_row_index]['enriched_payload'])
+    if processed_payloads:
+        for i, current_payload in enumerate(processed_payloads[:limit]):
+            previous_payload = processed_payloads[i + 1] if (i + 1) < len(processed_payloads) else None
             
             changes = diff_states(current_payload, previous_payload) if previous_payload else current_payload
 
-            if 'app_settings' in changes:
-                changes['app_settings'] = group_and_rename_app_settings(changes['app_settings'])
-            
-            precision = get_nested(current_payload, ['location', 'coordinate_precision'])
-            if precision is not None and 'location' in changes and changes.get('location'):
-                location_changes = changes['location']
-                if 'latitude' in location_changes and location_changes['latitude'] is not None:
-                    location_changes['latitude'] = round(location_changes['latitude'], precision)
-                if 'longitude' in location_changes and location_changes['longitude'] is not None:
-                    location_changes['longitude'] = round(location_changes['longitude'], precision)
-                location_changes.pop('coordinate_precision', None)
-                if not location_changes:
-                    changes.pop('location')
-
-            current_diagnostics = current_payload.get("diagnostics", {})
+            original_payload = orjson.loads(history_rows[i]['enriched_payload'])
+            current_diagnostics = original_payload.get("diagnostics", {})
             event_diagnostics = {
                 "ingest_request_id": current_diagnostics.get("ingest_request_id"),
                 "timestamps": current_diagnostics.get("timestamps"),
             }
             
-            if "diagnostics" in changes:
-                changes["diagnostics"].pop("ingest_request_id", None)
-                changes["diagnostics"].pop("timestamps", None)
-                if not changes["diagnostics"]:
-                    changes.pop("diagnostics", None)
+            changes.pop("diagnostics", None)
 
             data_with_deltas.append({
-                "id": current_row['id'],
-                "original_ingest_id": current_row.get('original_ingest_id'),
+                "id": history_rows[i]['id'],
+                "original_ingest_id": history_rows[i].get('original_ingest_id'),
                 "changes": _apply_custom_sorting(cleanup_empty(changes)),
                 "diagnostics": cleanup_empty(event_diagnostics)
             })
@@ -200,9 +194,9 @@ async def get_device_history(
         }
     
     time_range = {}
-    if records_to_process:
-        start_ts = records_to_process[0]['calculated_event_timestamp']
-        end_ts = records_to_process[-1]['calculated_event_timestamp']
+    if history_rows and data_with_deltas:
+        start_ts = history_rows[0]['calculated_event_timestamp']
+        end_ts = history_rows[len(data_with_deltas)-1]['calculated_event_timestamp']
         time_range = {"start": format_utc_timestamp(start_ts), "end": format_utc_timestamp(end_ts)}
 
     pagination = {
@@ -234,7 +228,7 @@ async def get_latest_device_data(request: Request, device_id: str):
             data_payload, freshness_info = parse_freshness_payload(freshness_payload)
 
             if 'location' in data_payload and data_payload.get('location'):
-                precision = data_payload['location'].pop('coordinate_precision', None)
+                precision = get_nested(data_payload, ['location', 'coordinate_precision'])
                 if precision is not None:
                     lat = data_payload['location'].get('latitude')
                     lon = data_payload['location'].get('longitude')
@@ -256,7 +250,7 @@ async def get_latest_device_data(request: Request, device_id: str):
                 weather_freshness.pop('weather_distance_from_actual_location_age_in_seconds', None)
                 weather_freshness.pop('weather_request_timestamp_location_time_age_in_seconds', None)
                 
-                weather_ts_str = data_payload.get('diagnostics', {}).get('weather', {}).get('weather_request_timestamp_utc')
+                weather_ts_str = get_nested(data_payload, ['diagnostics', 'weather', 'weather_request_timestamp_utc'])
                 if weather_ts_str:
                     try:
                         weather_dt = datetime.datetime.strptime(weather_ts_str, '%d.%m.%Y %H:%M:%S UTC')
@@ -299,7 +293,7 @@ async def get_latest_device_data(request: Request, device_id: str):
                 if key not in sorted_diagnostics:
                     sorted_diagnostics[key] = sort_dict_recursive(diagnostics_block[key])
             
-            sorted_data['diagnostics'] = cleanup_empty(sorted_diagnostics)
+            sorted_data['diagnostics'] = sorted_diagnostics
             
             return {
                 "request": {"self_url": f"{base_url}/data/latest/{device_id}"},

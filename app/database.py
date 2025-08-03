@@ -123,7 +123,13 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
                     )
                 )
                 await db.execute(
-                    "INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) VALUES (?, ?, ?) ON CONFLICT(device_id) DO UPDATE SET enriched_payload=excluded.enriched_payload, last_updated_ts=excluded.last_updated_ts",
+                    """INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) 
+                       VALUES (?, ?, ?) 
+                       ON CONFLICT(device_id) 
+                       DO UPDATE SET 
+                           enriched_payload=excluded.enriched_payload, 
+                           last_updated_ts=excluded.last_updated_ts
+                       WHERE excluded.last_updated_ts > latest_enriched_state.last_updated_ts""",
                     (
                         record.get("device_id"),
                         orjson.dumps(record.get("latest_payload")).decode(),

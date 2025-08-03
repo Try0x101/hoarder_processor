@@ -3,6 +3,8 @@ from fastapi.responses import ORJSONResponse
 from app.routes import internal, data_access, root, auth
 from starlette.middleware.sessions import SessionMiddleware
 import os
+import asyncio
+from app.geojson_processor.processor import run_processor_once
 
 app = FastAPI(
     default_response_class=ORJSONResponse,
@@ -10,6 +12,10 @@ app = FastAPI(
     docs_url=None, 
     redoc_url=None
 )
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(run_processor_once())
 
 app.add_middleware(
     SessionMiddleware,
