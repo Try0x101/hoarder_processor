@@ -2,16 +2,19 @@ import aiosqlite
 import os
 import orjson
 import redis.asyncio as redis
+import redis as sync_redis
 import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
 
-CELERY_BROKER_URL = "redis://localhost:6380/2"
-CELERY_RESULT_BACKEND_URL = "redis://localhost:6380/3"
-REDIS_POSITION_CACHE_URL = "redis://localhost:6380/4"
-REDIS_METRICS_CACHE_URL = "redis://localhost:6380/5"
+REDIS_SENTINEL_HOSTS = [('localhost', 26379), ('localhost', 26380), ('localhost', 26381)]
+REDIS_MASTER_NAME = "mymaster"
+CELERY_DB_BROKER = 2
+CELERY_DB_BACKEND = 3
+REDIS_DB_POSITION = 4
+REDIS_DB_METRICS = 5
 
 DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
@@ -25,8 +28,6 @@ def _get_redis_batch_ts_key(device_id: str) -> str:
     return f"{DEVICE_BATCH_TS_KEY_PREFIX}:{device_id}"
 
 async def get_device_batch_ts(redis_client: redis.Redis, device_id: str) -> Optional[int]:
-    if not redis_client:
-        return None
     redis_key = _get_redis_batch_ts_key(device_id)
     try:
         ts = await redis_client.get(redis_key)
@@ -35,8 +36,6 @@ async def get_device_batch_ts(redis_client: redis.Redis, device_id: str) -> Opti
         return None
 
 async def save_device_batch_ts(redis_client: redis.Redis, device_id: str, ts: int):
-    if not redis_client:
-        return
     redis_key = _get_redis_batch_ts_key(device_id)
     try:
         await redis_client.set(redis_key, ts, ex=DEVICE_BATCH_TS_TTL_SECONDS)
@@ -44,8 +43,6 @@ async def save_device_batch_ts(redis_client: redis.Redis, device_id: str, ts: in
         pass
 
 async def delete_device_batch_ts(redis_client: redis.Redis, device_id: str):
-    if not redis_client:
-        return
     redis_key = _get_redis_batch_ts_key(device_id)
     try:
         await redis_client.delete(redis_key)
@@ -53,8 +50,6 @@ async def delete_device_batch_ts(redis_client: redis.Redis, device_id: str):
         pass
 
 async def get_device_position(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
-    if not redis_client:
-        return None
     redis_key = _get_redis_position_key(device_id)
     try:
         pos_data = await redis_client.hgetall(redis_key)
@@ -76,8 +71,6 @@ async def get_device_position(redis_client: redis.Redis, device_id: str) -> Opti
         return None
 
 async def save_device_position(redis_client: redis.Redis, device_id: str, position_data: Dict[str, Any]):
-    if not redis_client:
-        return
     redis_key = _get_redis_position_key(device_id)
     try:
         save_data = {k: v for k, v in position_data.items() if v is not None}
@@ -106,36 +99,44 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
     if not records:
         return
 
+    telemetry_to_save = [
+        (
+            r.get("original_ingest_id"),
+            r.get("device_id"),
+            orjson.dumps(r.get("historical_payload")).decode(),
+            r.get("calculated_event_timestamp"),
+            r.get("request_size_bytes"),
+        )
+        for r in records
+    ]
+    latest_state_to_save = [
+        (
+            r.get("device_id"),
+            orjson.dumps(r.get("latest_payload")).decode(),
+            r.get("calculated_event_timestamp"),
+        )
+        for r in records
+    ]
+
     try:
         async with aiosqlite.connect(DB_PATH, timeout=30) as db:
             await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute("PRAGMA synchronous=NORMAL;")
-            
-            for record in records:
-                await db.execute(
-                    "INSERT OR REPLACE INTO enriched_telemetry (original_ingest_id, device_id, enriched_payload, calculated_event_timestamp, request_size_bytes) VALUES (?, ?, ?, ?, ?)",
-                    (
-                        record.get("original_ingest_id"),
-                        record.get("device_id"),
-                        orjson.dumps(record.get("historical_payload")).decode(),
-                        record.get("calculated_event_timestamp"),
-                        record.get("request_size_bytes")
-                    )
-                )
-                await db.execute(
-                    """INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) 
-                       VALUES (?, ?, ?) 
-                       ON CONFLICT(device_id) 
-                       DO UPDATE SET 
-                           enriched_payload=excluded.enriched_payload, 
-                           last_updated_ts=excluded.last_updated_ts
-                       WHERE excluded.last_updated_ts > latest_enriched_state.last_updated_ts""",
-                    (
-                        record.get("device_id"),
-                        orjson.dumps(record.get("latest_payload")).decode(),
-                        record.get("calculated_event_timestamp")
-                    )
-                )
+
+            await db.executemany(
+                "INSERT OR IGNORE INTO enriched_telemetry (original_ingest_id, device_id, enriched_payload, calculated_event_timestamp, request_size_bytes) VALUES (?, ?, ?, ?, ?)",
+                telemetry_to_save,
+            )
+            await db.executemany(
+                """INSERT INTO latest_enriched_state (device_id, enriched_payload, last_updated_ts) 
+                   VALUES (?, ?, ?) 
+                   ON CONFLICT(device_id) 
+                   DO UPDATE SET 
+                       enriched_payload=excluded.enriched_payload, 
+                       last_updated_ts=excluded.last_updated_ts
+                   WHERE excluded.last_updated_ts > latest_enriched_state.last_updated_ts""",
+                latest_state_to_save,
+            )
             await db.commit()
     except Exception as e:
         print(f"ERROR saving stateful data: {e}")

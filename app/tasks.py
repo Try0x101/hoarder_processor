@@ -11,8 +11,9 @@ import redis as sync_redis
 from typing import List, Dict, Any
 from celery_app import celery_app
 from app.database import (
-    get_latest_state_for_device, save_stateful_data, DB_PATH, 
-    REDIS_POSITION_CACHE_URL, REDIS_METRICS_CACHE_URL,
+    get_latest_state_for_device, save_stateful_data, DB_PATH,
+    REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
+    REDIS_DB_POSITION, REDIS_DB_METRICS,
     get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts
 )
 from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
@@ -46,8 +47,10 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
             records_by_device.setdefault(device_id, []).append(r)
 
     redis_client = None
+    sentinel = redis.Sentinel(REDIS_SENTINEL_HOSTS, socket_timeout=0.5, decode_responses=True)
+    
     try:
-        redis_client = redis.from_url(REDIS_POSITION_CACHE_URL, decode_responses=True, socket_timeout=2)
+        redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
         async with aiosqlite.connect(DB_PATH) as db:
             for device_id, device_records in records_by_device.items():
                 sorted_records = sorted(device_records, key=lambda r: r.get('id', 0))
@@ -113,14 +116,12 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         if num_records > 0:
             stats_redis_client = None
             try:
-                stats_redis_client = redis.from_url(REDIS_METRICS_CACHE_URL, decode_responses=False, socket_timeout=2)
+                stats_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_METRICS, decode_responses=False)
                 data_point = orjson.dumps({
                     "ts": time.time(), "duration": duration, "count": num_records
                 })
-                pipe = stats_redis_client.pipeline()
-                await pipe.lpush("processing_stats", data_point)
-                await pipe.ltrim("processing_stats", 0, 1999)
-                await pipe.execute()
+                await stats_redis_client.lpush("processing_stats", data_point)
+                await stats_redis_client.ltrim("processing_stats", 0, 1999)
             except redis.RedisError:
                 pass
             finally:
@@ -182,6 +183,7 @@ def _get_app_processes():
 
 @celery_app.task(name="processor.monitor_system")
 def monitor_system():
+    redis_client = None
     try:
         processes = _get_app_processes()
         if not processes:
@@ -194,7 +196,8 @@ def monitor_system():
         total_cpu = sum(p.cpu_percent() for p in processes)
         total_mem = sum(p.memory_info().rss for p in processes)
 
-        redis_client = sync_redis.from_url(REDIS_METRICS_CACHE_URL, socket_timeout=2)
+        sentinel = sync_redis.Sentinel(REDIS_SENTINEL_HOSTS, socket_timeout=0.5)
+        redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_METRICS)
         data_point = orjson.dumps({
             "ts": time.time(), "cpu_percent": total_cpu, "mem_rss_bytes": total_mem
         })
@@ -203,8 +206,10 @@ def monitor_system():
         pipe.lpush("system_stats", data_point)
         pipe.ltrim("system_stats", 0, 399)
         pipe.execute()
-        redis_client.close()
     except (psutil.Error, sync_redis.RedisError):
         pass
     except Exception:
         pass
+    finally:
+        if redis_client:
+            redis_client.close()

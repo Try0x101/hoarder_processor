@@ -1,6 +1,61 @@
 services:
-  redis:
+  redis-master:
     image: redis:7-alpine
-    ports:
-      - "6380:6379"
+    container_name: redis-master
+    command: redis-server --port 6380
+    network_mode: "host"
     restart: always
+
+  redis-replica:
+    image: redis:7-alpine
+    container_name: redis-replica
+    command: redis-server --port 6381 --replicaof 127.0.0.1 6380
+    network_mode: "host"
+    restart: always
+    depends_on:
+      - redis-master
+
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: sentinel-1
+    command: >
+      sh -c "echo 'port 26379' > /tmp/sentinel.conf && \
+             echo 'sentinel monitor mymaster 127.0.0.1 6380 2' >> /tmp/sentinel.conf && \
+             echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && \
+             echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && \
+             redis-sentinel /tmp/sentinel.conf"
+    network_mode: "host"
+    restart: always
+    depends_on:
+      - redis-master
+      - redis-replica
+
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: sentinel-2
+    command: >
+      sh -c "echo 'port 26380' > /tmp/sentinel.conf && \
+             echo 'sentinel monitor mymaster 127.0.0.1 6380 2' >> /tmp/sentinel.conf && \
+             echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && \
+             echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && \
+             redis-sentinel /tmp/sentinel.conf"
+    network_mode: "host"
+    restart: always
+    depends_on:
+      - redis-master
+      - redis-replica
+
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: sentinel-3
+    command: >
+      sh -c "echo 'port 26381' > /tmp/sentinel.conf && \
+             echo 'sentinel monitor mymaster 127.0.0.1 6380 2' >> /tmp/sentinel.conf && \
+             echo 'sentinel down-after-milliseconds mymaster 5000' >> /tmp/sentinel.conf && \
+             echo 'sentinel failover-timeout mymaster 10000' >> /tmp/sentinel.conf && \
+             redis-sentinel /tmp/sentinel.conf"
+    network_mode: "host"
+    restart: always
+    depends_on:
+      - redis-master
+      - redis-replica

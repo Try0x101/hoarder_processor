@@ -1,14 +1,27 @@
 from celery import Celery
 from celery.schedules import crontab
 from app.geojson_processor import settings as geojson_settings
-from app.database import CELERY_BROKER_URL, CELERY_RESULT_BACKEND_URL
+from app.database import (
+    REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
+    CELERY_DB_BROKER, CELERY_DB_BACKEND
+)
 
 celery_app = Celery(
     'hoarder_processor',
-    broker=CELERY_BROKER_URL,
-    backend=CELERY_RESULT_BACKEND_URL,
     include=['app.tasks', 'app.geojson_processor.tasks']
 )
+
+celery_app.conf.broker_url = ";".join([f"sentinel://{host}:{port}" for host, port in REDIS_SENTINEL_HOSTS])
+celery_app.conf.result_backend = celery_app.conf.broker_url
+
+celery_app.conf.broker_transport_options = {
+    'master_name': REDIS_MASTER_NAME,
+    'db': CELERY_DB_BROKER
+}
+celery_app.conf.result_backend_transport_options = {
+    'master_name': REDIS_MASTER_NAME,
+    'db': CELERY_DB_BACKEND
+}
 
 celery_app.conf.update(
     task_track_started=True,
@@ -21,7 +34,6 @@ celery_app.conf.update(
     worker_pool_restarts=True,
     worker_max_tasks_per_child=1000,
     worker_prefetch_multiplier=1,
-    beat_pidfile="/tmp/celerybeat.pid",
     beat_schedule_filename="/opt/hoarder_processor/logs/celerybeat-schedule",
     beat_schedule={
         'cleanup-db-every-6-hours': {

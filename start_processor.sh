@@ -10,8 +10,6 @@ CELERY_BEAT_LOG_FILE="${LOG_DIR}/celery_beat.log"
 UVICORN_LOG_FILE="${LOG_DIR}/uvicorn.log"
 PROJECT_PORT="8001"
 DB_FILE="hoarder_processor.db"
-REDIS_SERVICE_NAME="redis"
-CELERY_BEAT_PID_FILE="/tmp/celerybeat.pid"
 
 mkdir -p "$LOG_DIR"
 > "$CELERY_LOG_FILE"
@@ -29,15 +27,23 @@ if [ -f "docker-compose.yml" ]; then
     docker compose up -d
 fi
 
+if ! command -v redis-cli &> /dev/null; then
+    echo "FATAL: redis-cli is not installed or not in PATH. Please install redis-tools (e.g., sudo apt-get install redis-tools)." >&2
+    exit 1
+fi
+
 retries=15
-while ! docker compose exec ${REDIS_SERVICE_NAME} redis-cli set startup_check 1 > /dev/null 2>&1; do
+echo "Waiting for Redis Sentinel to elect a master..."
+while [ -z "$(redis-cli -p 26379 sentinel get-master-addr-by-name mymaster 2>/dev/null)" ]; do
     retries=$((retries - 1))
     if [ $retries -le 0 ]; then
-        docker compose logs ${REDIS_SERVICE_NAME}
+        echo "FATAL: Redis master not elected by Sentinel."
+        docker compose logs
         exit 1
     fi
     sleep 2
 done
+echo "Redis master is available."
 
 sleep 3
 
@@ -47,14 +53,8 @@ if [ ! -f "$DB_FILE" ]; then
     exit 1
 fi
 
-echo "Stopping any lingering application processes..."
-if [ -f "$CELERY_BEAT_PID_FILE" ]; then
-    echo "Found Celery Beat PID file. Attempting to stop process..."
-    cat "$CELERY_BEAT_PID_FILE" | xargs kill -9 || true
-fi
 pkill -9 -f "celery -A celery_app" || true
-pkill -9 -f "uvicorn app.main:app" || true
-rm -f "$CELERY_BEAT_PID_FILE"
+pkill -9 -f "uvicorn app.main:app --host 127.0.0.1 --port 8001" || true
 sleep 2
 
 export GOOGLE_CLIENT_ID="9386374739-9tcsvhkan37q3hqq22dvh5e5op7d752g.apps.googleusercontent.com"
