@@ -15,9 +15,42 @@ REDIS_METRICS_CACHE_URL = "redis://localhost:6380/5"
 
 DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
+DEVICE_BATCH_TS_KEY_PREFIX = "device:batch_ts"
+DEVICE_BATCH_TS_TTL_SECONDS = 6 * 3600
 
 def _get_redis_position_key(device_id: str) -> str:
     return f"{DEVICE_POSITION_KEY_PREFIX}:{device_id}"
+
+def _get_redis_batch_ts_key(device_id: str) -> str:
+    return f"{DEVICE_BATCH_TS_KEY_PREFIX}:{device_id}"
+
+async def get_device_batch_ts(redis_client: redis.Redis, device_id: str) -> Optional[int]:
+    if not redis_client:
+        return None
+    redis_key = _get_redis_batch_ts_key(device_id)
+    try:
+        ts = await redis_client.get(redis_key)
+        return int(ts) if ts else None
+    except (redis.RedisError, ValueError, TypeError):
+        return None
+
+async def save_device_batch_ts(redis_client: redis.Redis, device_id: str, ts: int):
+    if not redis_client:
+        return
+    redis_key = _get_redis_batch_ts_key(device_id)
+    try:
+        await redis_client.set(redis_key, ts, ex=DEVICE_BATCH_TS_TTL_SECONDS)
+    except redis.RedisError:
+        pass
+
+async def delete_device_batch_ts(redis_client: redis.Redis, device_id: str):
+    if not redis_client:
+        return
+    redis_key = _get_redis_batch_ts_key(device_id)
+    try:
+        await redis_client.delete(redis_key)
+    except redis.RedisError:
+        pass
 
 async def get_device_position(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
     if not redis_client:

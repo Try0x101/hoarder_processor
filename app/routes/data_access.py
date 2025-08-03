@@ -16,17 +16,22 @@ router = APIRouter(
 )
 
 KEY_ORDERS = {
-    'data': ['identity', 'location', 'network', 'power', 'environment'],
+    'data': ['identity', 'location', 'network', 'power', 'environment', 'diagnostics', 'app_settings'],
     'identity': ['device_name', 'device_id'],
     'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh'],
-    'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'bandwidth', 'cellular'],
+    'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'wifi_name_ssid', 'bandwidth', 'cellular'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
-    'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'mcc', 'mnc', 'cell_id', 'tac'],
-    'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah'],
+    'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'signal_quality', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],
+    'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
     'environment': ['weather', 'precipitation', 'wind', 'marine'],
     'weather': ['temperature_in_celsius', 'feels_like_in_celsius', 'description', 'assessment', 'humidity_percent', 'pressure_in_hpa', 'cloud_cover_percent'],
     'precipitation': ['type', 'intensity', 'summary'],
     'wind': ['speed_in_meters_per_second', 'gusts_in_meters_per_second', 'direction', 'description'],
+    'diagnostics': ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness', 'device_state', 'sensors', 'wifi_details'],
+    'device_state': ['screen_on', 'power_save_mode', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
+    'sensors': ['device_temperature_celsius', 'ambient_light_level', 'barometer_hpa', 'steps_since_boot', 'proximity_near'],
+    'wifi_details': ['wifi_frequency_channel', 'wifi_rssi_dbm', 'wifi_link_speed_quality_index', 'wifi_standard'],
+    'app_settings': []
 }
 
 def _apply_custom_sorting(data: Any, level_key: str = 'data') -> Any:
@@ -233,7 +238,7 @@ async def get_latest_device_data(request: Request, device_id: str):
             
             sorted_data = _apply_custom_sorting(data_payload)
             
-            diag_order = ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness']
+            diag_order = ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness', 'device_state', 'sensors', 'wifi_details']
             weather_diag_order = ['weather_distance_from_actual_location', 'weather_fetch_location', 'weather_data_old', 'weather_request_timestamp_location_time', 'weather_request_timestamp_utc']
 
             sorted_diagnostics = {}

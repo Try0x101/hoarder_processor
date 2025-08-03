@@ -3,7 +3,7 @@ import asyncio
 import datetime
 from typing import Optional, Dict, Any, Tuple
 
-from app.utils import weather_breaker, wttr_breaker, calculate_distance_km, WeatherRateLimiter
+from app.utils import weather_breaker, wttr_breaker, calculate_distance_km, WeatherRateLimiter, decode_geohash
 from app.database import get_device_position, save_device_position
 from app.weather_cache import find_cached_weather, save_weather_to_cache
 
@@ -104,11 +104,16 @@ async def _should_force_weather_update(redis_client, device_id: str, lat: float,
     return False
 
 async def get_weather_enrichment(redis_client, device_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    lat_str, lon_str = data.get("y"), data.get("x")
-    if not lat_str or not lon_str: return data
+    geohash_str = data.get("g")
+    if not geohash_str:
+        return data
+
+    lat_lon = decode_geohash(geohash_str)
+    if not lat_lon:
+        return data
     
     try:
-        lat, lon = float(lat_str), float(lon_str)
+        lat, lon = lat_lon
         if await _should_force_weather_update(redis_client, device_id, lat, lon):
             rate_limiter = WeatherRateLimiter(redis_client)
             weather, weather_ts = await get_coordinated_weather_data(rate_limiter, lat, lon)

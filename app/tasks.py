@@ -10,10 +10,14 @@ import time
 import redis as sync_redis
 from typing import List, Dict, Any
 from celery_app import celery_app
-from app.database import get_latest_state_for_device, save_stateful_data, DB_PATH, REDIS_POSITION_CACHE_URL, REDIS_METRICS_CACHE_URL
-from app.utils import deep_merge, cleanup_empty, merge_and_update_freshness, reconstruct_from_freshness
+from app.database import (
+    get_latest_state_for_device, save_stateful_data, DB_PATH, 
+    REDIS_POSITION_CACHE_URL, REDIS_METRICS_CACHE_URL,
+    get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts
+)
+from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
 from app.weather import get_weather_enrichment
-from app.transforms import transform_payload, format_bssid
+from app.transforms import transform_payload
 
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
@@ -34,86 +38,74 @@ def prepare_flat_data(record: Dict[str, Any]) -> Dict[str, Any]:
 async def _process_and_store_statefully(records: List[Dict[str, Any]]):
     start_time = time.monotonic()
     records_to_save = []
-    sorted_records = sorted(records, key=lambda r: r.get('calculated_event_timestamp', ''))
-    redis_client = None
     
+    records_by_device: Dict[str, List[Dict[str, Any]]] = {}
+    for r in records:
+        device_id = r.get("device_id")
+        if device_id:
+            records_by_device.setdefault(device_id, []).append(r)
+
+    redis_client = None
     try:
         redis_client = redis.from_url(REDIS_POSITION_CACHE_URL, decode_responses=True, socket_timeout=2)
         async with aiosqlite.connect(DB_PATH) as db:
-            for record in sorted_records:
-                device_id = record.get("device_id")
-                if not device_id: continue
-
-                request_size_bytes = len(orjson.dumps(record))
-                flat_data = prepare_flat_data(record)
+            for device_id, device_records in records_by_device.items():
+                sorted_records = sorted(device_records, key=lambda r: r.get('id', 0))
                 
-                base_freshness_payload, last_known_ts = await get_latest_state_for_device(db, device_id)
-                current_record_ts = flat_data.get("calculated_event_timestamp")
+                base_ts = await get_device_batch_ts(redis_client, device_id)
 
-                if not current_record_ts:
-                    continue
-
-                if current_record_ts and last_known_ts and current_record_ts <= last_known_ts:
-                    continue
-
-                simple_base_state = reconstruct_from_freshness(base_freshness_payload) if base_freshness_payload else {}
-                old_weather_diag = None
-                if simple_base_state:
-                    old_weather_diag = simple_base_state.get("diagnostics", {}).get("weather")
-                    if 't' not in flat_data:
-                        previous_type = simple_base_state.get("network", {}).get("cellular", {}).get("type")
-                        if previous_type: flat_data['t'] = previous_type
-                
-                raw_bssid = flat_data.get('b')
-                if 'b' not in flat_data and simple_base_state:
-                    flat_data['b'] = simple_base_state.get("network", {}).get("wifi_bssid")
-                elif format_bssid(raw_bssid) is None:
-                    if simple_base_state and 'network' in simple_base_state and 'wifi_bssid' in simple_base_state['network']:
-                        del simple_base_state['network']['wifi_bssid']
-
-                flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
-
-                if 'weather_fetch_ts' not in flat_data and old_weather_diag:
-                    loc_str = old_weather_diag.get('weather_fetch_location')
-                    if loc_str:
+                for record in sorted_records:
+                    payload = record.get("payload", {})
+                    event_timestamp_dt = None
+                    
+                    if 'ts' in payload and payload['ts'] is not None:
+                        base_ts = int(payload['ts'])
+                        await save_device_batch_ts(redis_client, device_id, base_ts)
+                        event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts, tz=datetime.timezone.utc)
+                    elif 'to' in payload and base_ts is not None and payload['to'] is not None:
+                        event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts + int(payload['to']), tz=datetime.timezone.utc)
+                    elif record.get('received_at'):
                         try:
-                            lat_s, lon_s = loc_str.split(',')
-                            flat_data['weather_fetch_lat'] = float(lat_s.strip())
-                            flat_data['weather_fetch_lon'] = float(lon_s.strip())
-                        except (ValueError, KeyError, IndexError): pass
+                            event_timestamp_dt = datetime.datetime.fromisoformat(record['received_at'].replace(" ", "T").replace("Z", "+00:00"))
+                            base_ts = None
+                            await delete_device_batch_ts(redis_client, device_id)
+                        except (ValueError, TypeError):
+                            continue
+                    else:
+                        continue
+                    
+                    record['calculated_event_timestamp'] = event_timestamp_dt.isoformat(sep=' ', timespec='seconds')
+                    
+                    request_size_bytes = len(orjson.dumps(record))
+                    flat_data = prepare_flat_data(record)
+                    
+                    base_freshness_payload, last_known_ts = await get_latest_state_for_device(db, device_id)
+                    current_record_ts = flat_data.get("calculated_event_timestamp")
 
-                    ts_str = old_weather_diag.get('weather_request_timestamp_utc')
-                    if ts_str:
-                        try:
-                            dt_obj = datetime.datetime.strptime(ts_str, '%d.%m.%Y %H:%M:%S UTC')
-                            flat_data['weather_fetch_ts'] = dt_obj.isoformat()
-                        except (ValueError, TypeError): pass
+                    if not current_record_ts: continue
+                    if last_known_ts and current_record_ts <= last_known_ts: continue
 
-                structured_payload = transform_payload(flat_data)
-                new_simple_payload = cleanup_empty(structured_payload)
-                
-                simple_base_state_for_history = copy.deepcopy(simple_base_state)
-                simple_base_state_for_history.pop("diagnostics", None)
-                historical_payload = deep_merge(new_simple_payload, simple_base_state_for_history)
+                    simple_base_state = reconstruct_from_freshness(base_freshness_payload) if base_freshness_payload else {}
+                    
+                    flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
 
-                latest_simple_payload_for_freshness = copy.deepcopy(new_simple_payload)
-                if old_weather_diag and not latest_simple_payload_for_freshness.get("diagnostics", {}).get("weather"):
-                    latest_simple_payload_for_freshness.setdefault("diagnostics", {}).setdefault("weather", old_weather_diag)
-
-                latest_freshness_payload = merge_and_update_freshness(
-                    base_freshness_payload or {},
-                    latest_simple_payload_for_freshness,
-                    current_record_ts
-                )
-                
-                records_to_save.append({
-                    "original_ingest_id": flat_data.get("original_ingest_id"),
-                    "device_id": device_id,
-                    "historical_payload": historical_payload,
-                    "latest_payload": latest_freshness_payload,
-                    "calculated_event_timestamp": current_record_ts,
-                    "request_size_bytes": request_size_bytes
-                })
+                    new_full_simple_state = transform_payload(flat_data, simple_base_state)
+                    new_full_simple_state = cleanup_empty(new_full_simple_state)
+                    
+                    latest_freshness_payload = update_freshness_from_full_state(
+                        base_freshness_payload or {},
+                        new_full_simple_state,
+                        current_record_ts
+                    )
+                    
+                    records_to_save.append({
+                        "original_ingest_id": flat_data.get("original_ingest_id"),
+                        "device_id": device_id,
+                        "historical_payload": new_full_simple_state,
+                        "latest_payload": latest_freshness_payload,
+                        "calculated_event_timestamp": current_record_ts,
+                        "request_size_bytes": request_size_bytes
+                    })
 
         if records_to_save:
             await save_stateful_data(records_to_save)

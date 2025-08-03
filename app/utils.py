@@ -5,6 +5,53 @@ import time
 from enum import Enum
 from typing import Dict, Any, Tuple, Optional
 import redis.asyncio as redis
+import geohash as pygeohash
+import base64
+
+def get_nested(d: dict, keys: list, default: Any = None) -> Any:
+    for key in keys:
+        if isinstance(d, dict):
+            d = d.get(key)
+        else:
+            return default
+    return d if d is not None else default
+
+def decode_geohash(geohash_str: str) -> Optional[Tuple[float, float]]:
+    if not geohash_str or not isinstance(geohash_str, str):
+        return None
+    try:
+        lat, lon = pygeohash.decode(geohash_str)
+        return float(lat), float(lon)
+    except (ValueError, TypeError):
+        return None
+
+def decode_base62(b62_str: str) -> Optional[int]:
+    if not b62_str or not isinstance(b62_str, str):
+        return None
+    
+    BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    base = len(BASE62_ALPHABET)
+    num = 0
+    
+    try:
+        for char in b62_str:
+            num = num * base + BASE62_ALPHABET.index(char)
+    except ValueError:
+        return None
+        
+    return num
+
+def decode_bssid_base64(b64_str: str) -> Optional[str]:
+    if not b64_str or not isinstance(b64_str, str):
+        return None
+    try:
+        padded_b64_str = b64_str + '=' * (-len(b64_str) % 4)
+        mac_bytes = base64.b64decode(padded_b64_str)
+        if len(mac_bytes) != 6:
+            return None
+        return ":".join(f"{byte:02x}" for byte in mac_bytes).lower()
+    except (base64.binascii.Error, ValueError):
+        return None
 
 def reconstruct_from_freshness(freshness_payload: Dict) -> Dict:
     simple_payload = {}
@@ -30,28 +77,22 @@ def _convert_to_freshness(payload: Dict, timestamp: str) -> Dict:
             fresh_payload[key] = {"value": value, "ts": timestamp}
     return fresh_payload
 
-def merge_and_update_freshness(base_freshness: Dict, new_simple: Dict, timestamp: str) -> Dict:
-    if not base_freshness:
-        return _convert_to_freshness(new_simple, timestamp)
+def update_freshness_from_full_state(base_freshness: dict, new_full_simple: dict, new_ts: str) -> dict:
+    new_freshness = {}
+    for key, new_simple_value in new_full_simple.items():
+        base_node = base_freshness.get(key)
 
-    result = copy.deepcopy(base_freshness)
-    
-    for key, new_value in new_simple.items():
-        if new_value is None:
-            if key in result:
-                del result[key]
-            continue
-            
-        if isinstance(new_value, dict):
-            base_node = result.get(key)
-            if isinstance(base_node, dict) and "value" not in base_node:
-                result[key] = merge_and_update_freshness(base_node, new_value, timestamp)
-            else:
-                result[key] = _convert_to_freshness(new_value, timestamp)
+        if isinstance(new_simple_value, dict):
+            base_sub_freshness = base_node if isinstance(base_node, dict) and "value" not in base_node else {}
+            new_freshness[key] = update_freshness_from_full_state(base_sub_freshness, new_simple_value, new_ts)
         else:
-            result[key] = {"value": new_value, "ts": timestamp}
-
-    return result
+            old_value = base_node.get("value") if isinstance(base_node, dict) else None
+            
+            if base_node and old_value == new_simple_value:
+                new_freshness[key] = base_node
+            else:
+                new_freshness[key] = {"value": new_simple_value, "ts": new_ts}
+    return new_freshness
 
 def parse_freshness_payload(freshness_payload: Dict) -> Tuple[Dict, Dict]:
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -124,13 +165,14 @@ def deep_merge(source: dict, destination: dict) -> dict:
             result[key] = value
     return result
 
-def cleanup_empty(d: Dict) -> Dict:
-    if not isinstance(d, dict):
-        return d
-    return {
-        k: v for k, v in ((k, cleanup_empty(v)) for k, v in d.items())
-        if v is not None and v != ''
-    }
+def cleanup_empty(d: Any) -> Any:
+    if isinstance(d, dict):
+        temp_dict = {k: cleanup_empty(v) for k, v in d.items()}
+        return {k: v for k, v in temp_dict.items() if v is not None and v != '' and v != [] and v != {}}
+    if isinstance(d, list):
+        temp_list = [cleanup_empty(item) for item in d]
+        return [v for v in temp_list if v is not None and v != '' and v != [] and v != {}]
+    return d
 
 def sort_dict_recursive(d: Any) -> Any:
     if not isinstance(d, (dict, list)):
