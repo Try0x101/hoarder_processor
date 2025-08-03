@@ -8,6 +8,10 @@ import redis.asyncio as redis
 import geohash as pygeohash
 import base64
 
+GEOHASH_LEN_TO_DECIMALS = {
+    5: 4, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8, 11: 8, 12: 8
+}
+
 def get_nested(d: dict, keys: list, default: Any = None) -> Any:
     for key in keys:
         if isinstance(d, dict):
@@ -16,12 +20,13 @@ def get_nested(d: dict, keys: list, default: Any = None) -> Any:
             return default
     return d if d is not None else default
 
-def decode_geohash(geohash_str: str) -> Optional[Tuple[float, float]]:
+def decode_geohash(geohash_str: str) -> Optional[Tuple[float, float, int]]:
     if not geohash_str or not isinstance(geohash_str, str):
         return None
     try:
         lat, lon = pygeohash.decode(geohash_str)
-        return float(lat), float(lon)
+        precision = GEOHASH_LEN_TO_DECIMALS.get(len(geohash_str), 3 if len(geohash_str) < 5 else 8)
+        return float(lat), float(lon), precision
     except (ValueError, TypeError):
         return None
 
@@ -265,3 +270,126 @@ class SimpleCircuitBreaker:
 
 weather_breaker = SimpleCircuitBreaker("OpenMeteo", failure_threshold=3, timeout=30)
 wttr_breaker = SimpleCircuitBreaker("WTTR", failure_threshold=2, timeout=20)
+
+APP_SETTINGS_KEY_MAP = {
+    "av": "app_version_code", "dc": "data_collection_toggle", "su": "server_upload_toggle",
+    "fc": "force_continuous", "p1": "continuous_power_mode", "p2": "optimized_power_mode",
+    "p3": "passive_power_mode", "x1": "wifi_rssi_precision", "xa": "gps_altitude_precision",
+    "xb": "battery_precision", "xc": "step_counter_precision", "xg": "gps_precision",
+    "xl": "ambient_light_precision", "xn": "network_speed_precision", "xp": "barometer_precision",
+    "xr": "cellular_rssi_precision", "xs": "speed_precision", "dm": "diagnostics_master_switch",
+    "ea": "system_audio_toggle", "eb": "barometer_toggle", "ec": "charging_state_toggle",
+    "ed": "cellular_data_activity_toggle", "ef": "cell_signal_quality_toggle",
+    "eg": "timing_advance_toggle", "ek": "step_counter_toggle", "el": "ambient_light_toggle",
+    "em": "network_metered_toggle", "ep": "power_save_toggle", "es": "screen_state_toggle",
+    "et": "device_temp_toggle", "ev": "vpn_status_toggle", "ex": "camera_state_toggle",
+    "ey": "flashlight_state_toggle", "w1": "wifi_rssi_toggle", "w2": "wifi_frequency_toggle",
+    "w3": "wifi_link_speed_toggle", "w4": "wifi_standard_toggle", "w5": "wifi_name_ssid_toggle",
+    "b1": "trigger_by_count", "b2": "trigger_by_timeout", "b3": "trigger_by_max_size",
+    "bc": "batch_record_count", "be": "batching_toggle", "bl": "compression_level",
+    "bs": "batch_max_size_kb", "bt": "batch_timeout_sec", "m1": "gps_permission_state",
+    "m2": "phone_state_permission", "m3": "activity_recognition_permission",
+    "m4": "post_notifications_permission", "q1": "barometer_sensor_state",
+    "q2": "step_counter_sensor_state", "q3": "ambient_light_sensor_state",
+    "q4": "proximity_sensor_state", "q5": "motion_detector_state", "bo": "battery_optimization_state",
+    "c1": "calibrated_stationary_thresh", "c2": "calibrated_moving_thresh"
+}
+
+def rename_app_settings_freshness_keys(freshness_dict: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(freshness_dict, dict):
+        return freshness_dict
+    
+    renamed_dict = {}
+    for key, value in freshness_dict.items():
+        if key.endswith('_age_in_seconds'):
+            short_key = key[:-len('_age_in_seconds')]
+            long_key = APP_SETTINGS_KEY_MAP.get(short_key, short_key)
+            renamed_dict[f"{long_key}_age_in_seconds"] = value
+        else:
+            renamed_dict[key] = value
+    return renamed_dict
+
+def group_and_rename_app_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(settings, dict):
+        return settings
+    
+    s = settings
+    
+    PERMISSION_MAP = {0: "Not Granted", 1: "Foreground", 2: "Background"}
+    BOOL_PERMISSION_MAP = {0: "Not Granted", 1: "Granted"}
+    SENSOR_HEALTH_MAP = {1: "Not Available", 2: "OK", 3: "Error", 4: "Disabled"}
+    MOTION_DETECTOR_MAP = {2: "OK", 3: "Stale"}
+    BATTERY_OPTIMIZATION_MAP = {0: "Unrestricted", 1: "Optimized", 2: "Restricted"}
+    PRECISION_MAP = {
+        'x1': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm"}, 'xa': {0:"Smart", 1:"Max", 2:"2m", 3:"10m", 4:"25m"},
+        'xb': {0:"Smart", 1:"Max", 2:"2%", 3:"5%", 4:"10%"}, 'xc': {0:"Smart", 1:"Max", 2:"10", 3:"100", 4:"1000"},
+        'xg': {0:"Smart", 1:"Max", 2:"20m", 3:"100m"}, 'xl': {0:"Smart", 1:"Max", 2:"1-lux", 3:"10-lux", 4:"100-lux"},
+        'xn': {0:"Smart", 1:"Max", 2:"1Mbps", 3:"2Mbps", 4:"5Mbps"}, 'xp': {0:"Smart", 1:"Max", 2:"0.1hPa", 3:"1hPa", 4:"10hPa"},
+        'xr': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm", 4:"10dBm"}, 'xs': {0:"Smart", 1:"Max", 2:"1kmh", 3:"3kmh", 4:"5kmh"}
+    }
+    
+    grouped = {
+        "general": {
+            "app_version_code": s.get("av"), "data_collection_enabled": s.get("dc") == 1, "server_upload_enabled": s.get("su") == 1
+        },
+        "power_management": {
+            "power_modes": {
+                "force_continuous": s.get("fc") == 1, "continuous": s.get("p1") == 1,
+                "optimized": s.get("p2") == 1, "passive": s.get("p3") == 1
+            },
+            "battery_optimization_state": BATTERY_OPTIMIZATION_MAP.get(s.get("bo"))
+        },
+        "batching_and_upload": {
+            "batching_enabled": s.get("be") == 1, "compression_level": s.get("bl"),
+            "triggers": {
+                "by_record_count": s.get("b1") == 1, "by_timeout": s.get("b2") == 1, "by_max_size": s.get("b3") == 1
+            },
+            "trigger_values": {
+                "record_count": s.get("bc"), "timeout_seconds": s.get("bt"), "max_size_kb": s.get("bs")
+            }
+        },
+        "precision_controls": {
+            "wifi_signal_strength": PRECISION_MAP.get('x1', {}).get(s.get('x1')),
+            "gps_altitude": PRECISION_MAP.get('xa', {}).get(s.get('xa')),
+            "battery_level": PRECISION_MAP.get('xb', {}).get(s.get('xb')),
+            "step_counter": PRECISION_MAP.get('xc', {}).get(s.get('xc')),
+            "gps_coordinates": PRECISION_MAP.get('xg', {}).get(s.get('xg')),
+            "ambient_light": PRECISION_MAP.get('xl', {}).get(s.get('xl')),
+            "network_speed": PRECISION_MAP.get('xn', {}).get(s.get('xn')),
+            "barometer": PRECISION_MAP.get('xp', {}).get(s.get('xp')),
+            "cellular_signal_strength": PRECISION_MAP.get('xr', {}).get(s.get('xr')),
+            "speed": PRECISION_MAP.get('xs', {}).get(s.get('xs'))
+        },
+        "diagnostics_toggles": {
+            "master_switch": s.get("dm") == 1,
+            "general_state": {
+                "system_audio": s.get("ea") == 1, "charging_state": s.get("ec") == 1, "data_activity": s.get("ed") == 1,
+                "network_metered": s.get("em") == 1, "power_save_mode": s.get("ep") == 1, "screen_state": s.get("es") == 1,
+                "device_temperature": s.get("et") == 1, "vpn_status": s.get("ev") == 1, "camera_state": s.get("ex") == 1,
+                "flashlight_state": s.get("ey") == 1
+            },
+            "sensor_state": {
+                "barometer": s.get("eb") == 1, "cell_signal_quality": s.get("ef") == 1, "timing_advance": s.get("eg") == 1,
+                "step_counter": s.get("ek") == 1, "ambient_light": s.get("el") == 1
+            },
+            "wifi_details": {
+                "signal_strength": s.get("w1") == 1, "frequency": s.get("w2") == 1, "link_speed": s.get("w3") == 1,
+                "standard": s.get("w4") == 1, "ssid": s.get("w5") == 1
+            }
+        },
+        "system_status": {
+            "permissions": {
+                "gps": PERMISSION_MAP.get(s.get("m1")), "phone_state": BOOL_PERMISSION_MAP.get(s.get("m2")),
+                "activity_recognition": BOOL_PERMISSION_MAP.get(s.get("m3")), "post_notifications": BOOL_PERMISSION_MAP.get(s.get("m4"))
+            },
+            "sensor_health": {
+                "barometer": SENSOR_HEALTH_MAP.get(s.get("q1")), "step_counter": SENSOR_HEALTH_MAP.get(s.get("q2")),
+                "ambient_light": SENSOR_HEALTH_MAP.get(s.get("q3")), "proximity": SENSOR_HEALTH_MAP.get(s.get("q4")),
+                "motion_detector": MOTION_DETECTOR_MAP.get(s.get("q5"))
+            },
+            "calibration": {
+                "stationary_threshold_variance": s.get("c1"), "moving_threshold_variance": s.get("c2")
+            }
+        }
+    }
+    return cleanup_empty(grouped)

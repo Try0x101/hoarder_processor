@@ -5,7 +5,11 @@ import datetime
 from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote_plus
-from app.utils import diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, reconstruct_from_freshness, sort_dict_recursive
+from app.utils import (
+    diff_states, format_utc_timestamp, cleanup_empty, parse_freshness_payload, 
+    reconstruct_from_freshness, sort_dict_recursive, group_and_rename_app_settings,
+    rename_app_settings_freshness_keys, get_nested
+)
 from app.database import DB_PATH
 from app.security import get_current_user
 
@@ -16,7 +20,7 @@ router = APIRouter(
 )
 
 KEY_ORDERS = {
-    'data': ['identity', 'location', 'network', 'power', 'environment', 'diagnostics', 'app_settings'],
+    'data': ['identity', 'location', 'network', 'power', 'environment', 'device_state', 'sensors', 'wifi_details', 'diagnostics', 'app_settings'],
     'identity': ['device_name', 'device_id'],
     'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh'],
     'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'wifi_name_ssid', 'bandwidth', 'cellular'],
@@ -27,11 +31,15 @@ KEY_ORDERS = {
     'weather': ['temperature_in_celsius', 'feels_like_in_celsius', 'description', 'assessment', 'humidity_percent', 'pressure_in_hpa', 'cloud_cover_percent'],
     'precipitation': ['type', 'intensity', 'summary'],
     'wind': ['speed_in_meters_per_second', 'gusts_in_meters_per_second', 'direction', 'description'],
-    'diagnostics': ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness', 'device_state', 'sensors', 'wifi_details'],
     'device_state': ['screen_on', 'power_save_mode', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
     'sensors': ['device_temperature_celsius', 'ambient_light_level', 'barometer_hpa', 'steps_since_boot', 'proximity_near'],
     'wifi_details': ['wifi_frequency_channel', 'wifi_rssi_dbm', 'wifi_link_speed_quality_index', 'wifi_standard'],
-    'app_settings': []
+    'diagnostics': ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness'],
+    'app_settings': ['general', 'power_management', 'batching_and_upload', 'precision_controls', 'diagnostics_toggles', 'system_status'],
+    'power_management': ['power_modes', 'battery_optimization_state'],
+    'batching_and_upload': ['batching_enabled', 'compression_level', 'triggers', 'trigger_values'],
+    'diagnostics_toggles': ['master_switch', 'general_state', 'sensor_state', 'wifi_details'],
+    'system_status': ['permissions', 'sensor_health', 'calibration']
 }
 
 def _apply_custom_sorting(data: Any, level_key: str = 'data') -> Any:
@@ -133,6 +141,20 @@ async def get_device_history(
             
             changes = diff_states(current_payload, previous_payload) if previous_payload else current_payload
 
+            if 'app_settings' in changes:
+                changes['app_settings'] = group_and_rename_app_settings(changes['app_settings'])
+            
+            precision = get_nested(current_payload, ['location', 'coordinate_precision'])
+            if precision is not None and 'location' in changes and changes.get('location'):
+                location_changes = changes['location']
+                if 'latitude' in location_changes and location_changes['latitude'] is not None:
+                    location_changes['latitude'] = round(location_changes['latitude'], precision)
+                if 'longitude' in location_changes and location_changes['longitude'] is not None:
+                    location_changes['longitude'] = round(location_changes['longitude'], precision)
+                location_changes.pop('coordinate_precision', None)
+                if not location_changes:
+                    changes.pop('location')
+
             current_diagnostics = current_payload.get("diagnostics", {})
             event_diagnostics = {
                 "ingest_request_id": current_diagnostics.get("ingest_request_id"),
@@ -211,6 +233,22 @@ async def get_latest_device_data(request: Request, device_id: str):
             freshness_payload = orjson.loads(row['enriched_payload'])
             data_payload, freshness_info = parse_freshness_payload(freshness_payload)
 
+            if 'location' in data_payload and data_payload.get('location'):
+                precision = data_payload['location'].pop('coordinate_precision', None)
+                if precision is not None:
+                    lat = data_payload['location'].get('latitude')
+                    lon = data_payload['location'].get('longitude')
+                    if lat is not None:
+                        data_payload['location']['latitude'] = round(lat, precision)
+                    if lon is not None:
+                        data_payload['location']['longitude'] = round(lon, precision)
+
+            if 'app_settings' in data_payload and isinstance(data_payload['app_settings'], dict):
+                data_payload['app_settings'] = group_and_rename_app_settings(data_payload['app_settings'])
+            
+            if 'app_settings' in freshness_info and isinstance(freshness_info['app_settings'], dict):
+                freshness_info['app_settings'] = rename_app_settings_freshness_keys(freshness_info['app_settings'])
+
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             if 'diagnostics' in freshness_info and 'weather' in freshness_info['diagnostics']:
                 weather_freshness = freshness_info['diagnostics']['weather']
@@ -238,7 +276,7 @@ async def get_latest_device_data(request: Request, device_id: str):
             
             sorted_data = _apply_custom_sorting(data_payload)
             
-            diag_order = ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness', 'device_state', 'sensors', 'wifi_details']
+            diag_order = ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness']
             weather_diag_order = ['weather_distance_from_actual_location', 'weather_fetch_location', 'weather_data_old', 'weather_request_timestamp_location_time', 'weather_request_timestamp_utc']
 
             sorted_diagnostics = {}

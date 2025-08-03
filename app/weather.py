@@ -108,12 +108,12 @@ async def get_weather_enrichment(redis_client, device_id: str, data: Dict[str, A
     if not geohash_str:
         return data
 
-    lat_lon = decode_geohash(geohash_str)
-    if not lat_lon:
+    decoded_geohash = decode_geohash(geohash_str)
+    if not decoded_geohash:
         return data
     
     try:
-        lat, lon = lat_lon
+        lat, lon, _ = decoded_geohash
         if await _should_force_weather_update(redis_client, device_id, lat, lon):
             rate_limiter = WeatherRateLimiter(redis_client)
             weather, weather_ts = await get_coordinated_weather_data(rate_limiter, lat, lon)
