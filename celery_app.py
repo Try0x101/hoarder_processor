@@ -21,6 +21,7 @@ celery_app.conf.update(
     worker_pool_restarts=True,
     worker_max_tasks_per_child=1000,
     worker_prefetch_multiplier=1,
+    beat_pidfile="/tmp/celerybeat.pid",
     beat_schedule_filename="/opt/hoarder_processor/logs/celerybeat-schedule",
     beat_schedule={
         'cleanup-db-every-6-hours': {

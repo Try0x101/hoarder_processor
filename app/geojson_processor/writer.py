@@ -78,17 +78,23 @@ class GeoJSONManager:
             self._is_first_feature = False
 
     async def finalize(self):
-        if not self._file_handle: return
+        if not self._file_handle:
+            print("GEOJSON Writer: Finalize called but no file handle exists. Aborting.")
+            return
 
         await self._file_handle.write(b']}')
         await self._file_handle.close()
         self._file_handle = None
 
         if not self._features_written and not self.started_from_existing:
-            try: os.remove(self._temp_path)
-            except OSError: pass
+            print(f"GEOJSON Writer: No new features written and not continuing an existing file. Deleting temp file: {self._temp_path}")
+            try:
+                os.remove(self._temp_path)
+            except OSError as e:
+                print(f"GEOJSON Writer: Error deleting temp file {self._temp_path}: {e}")
             return
 
+        print(f"GEOJSON Writer: Finalizing GeoJSON file. Features written: {self._features_written}. Continued from existing: {self.started_from_existing}.")
         try:
             file_size = os.path.getsize(self._temp_path)
             size_str = _format_size(file_size)

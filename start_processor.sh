@@ -11,6 +11,7 @@ UVICORN_LOG_FILE="${LOG_DIR}/uvicorn.log"
 PROJECT_PORT="8001"
 DB_FILE="hoarder_processor.db"
 REDIS_SERVICE_NAME="redis"
+CELERY_BEAT_PID_FILE="/tmp/celerybeat.pid"
 
 mkdir -p "$LOG_DIR"
 > "$CELERY_LOG_FILE"
@@ -46,8 +47,14 @@ if [ ! -f "$DB_FILE" ]; then
     exit 1
 fi
 
+echo "Stopping any lingering application processes..."
+if [ -f "$CELERY_BEAT_PID_FILE" ]; then
+    echo "Found Celery Beat PID file. Attempting to stop process..."
+    cat "$CELERY_BEAT_PID_FILE" | xargs kill -9 || true
+fi
 pkill -9 -f "celery -A celery_app" || true
-pkill -9 -f "uvicorn app.main:app --host 127.0.0.1 --port 8001" || true
+pkill -9 -f "uvicorn app.main:app" || true
+rm -f "$CELERY_BEAT_PID_FILE"
 sleep 2
 
 export GOOGLE_CLIENT_ID="9386374739-9tcsvhkan37q3hqq22dvh5e5op7d752g.apps.googleusercontent.com"
