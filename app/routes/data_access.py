@@ -213,28 +213,6 @@ async def get_device_history(
         "data": data_with_deltas
     }
 
-def _restructure_network_data(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if 'network' not in payload:
-        return payload
-    
-    wifi_data = {}
-    
-    if 'wifi_details' in payload and isinstance(payload['wifi_details'], dict):
-        wifi_details = payload.pop('wifi_details')
-        wifi_data['frequency_channel'] = wifi_details.get('wifi_frequency_channel')
-        wifi_data['rssi_dbm'] = wifi_details.get('wifi_rssi_dbm')
-        wifi_data['link_speed_quality_index'] = wifi_details.get('wifi_link_speed_quality_index')
-        wifi_data['standard'] = wifi_details.get('wifi_standard')
-
-    if isinstance(payload['network'], dict):
-        network = payload['network']
-        wifi_data['ssid'] = network.pop('wifi_name_ssid', None)
-        wifi_data['bssid'] = network.pop('wifi_bssid', None)
-        
-        payload['network']['wifi'] = cleanup_empty(wifi_data)
-
-    return payload
-
 @router.get("/latest/{device_id}")
 async def get_latest_device_data(request: Request, device_id: str):
     base_url = build_base_url(request)
@@ -264,8 +242,6 @@ async def get_latest_device_data(request: Request, device_id: str):
             
             if 'app_settings' in freshness_info and isinstance(freshness_info['app_settings'], dict):
                 freshness_info['app_settings'] = rename_app_settings_freshness_keys(freshness_info['app_settings'])
-
-            data_payload = _restructure_network_data(data_payload)
 
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             if 'diagnostics' in freshness_info and 'weather' in freshness_info['diagnostics']:

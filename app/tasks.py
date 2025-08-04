@@ -53,7 +53,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
         async with aiosqlite.connect(DB_PATH) as db:
             for device_id, device_records in records_by_device.items():
-                sorted_records = sorted(device_records, key=lambda r: r.get('id', 0))
+                sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
                 
                 base_ts = await get_device_batch_ts(redis_client, device_id)
 

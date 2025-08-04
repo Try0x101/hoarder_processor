@@ -117,41 +117,46 @@ def format_timespan_human(seconds: Optional[float]) -> Optional[str]:
         return f"{val} year{'s' if val != 1 else ''} ago"
     return f"{years} years ago"
 
-def _get_val_or_base(data, key, base_state, path, error_val=None, transform_func=None):
+def _get_val_or_base(data: Dict[str, Any], key: str, base_state: Dict[str, Any], path: list, default: Any, error_val: Any = object(), transform_func=None):
     if key in data:
         val = data[key]
         if val == error_val:
             return None
-        return transform_func(val) if transform_func else val
-    return get_nested(base_state, path)
+        if transform_func:
+            return transform_func(val)
+        return val
+    
+    return get_nested(base_state, path, default)
 
 def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[str, Any]:
     lat, lon, precision = None, None, None
-    if 'g' in data:
-        geohash_val = data['g']
-        if geohash_val != "":
-            decoded = decode_geohash(geohash_val)
-            if decoded:
-                lat, lon, precision = decoded
+    if 'g' in data and data['g'] != "":
+        decoded = decode_geohash(data['g'])
+        if decoded:
+            lat, lon, precision = decoded
+        else:
+            lat = get_nested(base_state, ['location', 'latitude'])
+            lon = get_nested(base_state, ['location', 'longitude'])
+            precision = get_nested(base_state, ['location', 'coordinate_precision'])
     else:
         lat = get_nested(base_state, ['location', 'latitude'])
         lon = get_nested(base_state, ['location', 'longitude'])
         precision = get_nested(base_state, ['location', 'coordinate_precision'])
 
-    cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], -1, lambda v: CELLULAR_TYPE_MAP.get(v))
-    formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi_bssid'], "", decode_bssid_base64)
+    cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], None, -1, lambda v: CELLULAR_TYPE_MAP.get(v))
+    formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi', 'bssid'], None, "", decode_bssid_base64)
     currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type_str
     
-    battery_percent_val = _get_val_or_base(data, 'p', base_state, ['power', 'battery_percent'], None, safe_int)
-    capacity_mah_val = _get_val_or_base(data, 'c', base_state, ['power', 'capacity_in_mah'], 0, lambda v: safe_int(v) * 100)
+    battery_percent_val = _get_val_or_base(data, 'p', base_state, ['power', 'battery_percent'], None)
+    capacity_mah_val = _get_val_or_base(data, 'c', base_state, ['power', 'capacity_in_mah'], 0, 0, lambda v: safe_int(v) * 100)
     leftover_capacity_mah = None
     if battery_percent_val is not None and capacity_mah_val is not None and capacity_mah_val > 0:
         leftover_capacity_mah = int(round((battery_percent_val / 100.0) * capacity_mah_val))
 
-    temp_c = _get_val_or_base(data, 'temperature', base_state, ['environment', 'weather', 'temperature_in_celsius'], None, lambda v: safe_float(v, 1))
-    precip_val = _get_val_or_base(data, 'precipitation', base_state, ['environment', 'precipitation', 'value_mm'], None, safe_float)
-    weather_code = _get_val_or_base(data, 'code', base_state, ['environment', 'weather', 'code'], None, safe_int)
-    wind_speed_ms = _get_val_or_base(data, 'wind_speed', base_state, ['environment', 'wind', 'speed_in_meters_per_second'], None, lambda v: safe_float(v, 1))
+    temp_c = _get_val_or_base(data, 'temperature', base_state, ['environment', 'weather', 'temperature_in_celsius'], None, None, lambda v: safe_float(v, 1))
+    precip_val = _get_val_or_base(data, 'precipitation', base_state, ['environment', 'precipitation', 'value_mm'], None, None, safe_float)
+    weather_code = _get_val_or_base(data, 'code', base_state, ['environment', 'weather', 'code'], None, None, safe_int)
+    wind_speed_ms = _get_val_or_base(data, 'wind_speed', base_state, ['environment', 'wind', 'speed_in_meters_per_second'], None, None, lambda v: safe_float(v, 1))
     precip_info = get_precipitation_info(precip_val, weather_code)
     
     fetch_lat = safe_float(data.get('weather_fetch_lat', get_nested(base_state, ['diagnostics', 'weather', 'weather_fetch_lat'])))
@@ -200,105 +205,105 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
     new_app_settings_update = data.get('ad', {})
     merged_app_settings = {**old_app_settings, **new_app_settings_update}
 
-    wind_dir_val = _get_val_or_base(data, 'wind_direction', base_state, ['environment', 'wind', 'direction'])
+    wind_dir_val = _get_val_or_base(data, 'wind_direction', base_state, ['environment', 'wind', 'direction'], None)
     wind_dir_str = get_wind_direction_compass(safe_float(wind_dir_val)) if isinstance(wind_dir_val, (int, float)) else wind_dir_val
 
-    wave_dir_val = _get_val_or_base(data, 'marine_wave_direction', base_state, ['environment', 'marine', 'wave', 'direction'])
+    wave_dir_val = _get_val_or_base(data, 'marine_wave_direction', base_state, ['environment', 'marine', 'wave', 'direction'], None)
     wave_dir_str = get_wind_direction_compass(safe_float(wave_dir_val)) if isinstance(wave_dir_val, (int, float)) else wave_dir_val
 
-    swell_dir_val = _get_val_or_base(data, 'marine_swell_wave_direction', base_state, ['environment', 'marine', 'swell', 'direction'])
+    swell_dir_val = _get_val_or_base(data, 'marine_swell_wave_direction', base_state, ['environment', 'marine', 'swell', 'direction'], None)
     swell_dir_str = get_wind_direction_compass(safe_float(swell_dir_val)) if isinstance(swell_dir_val, (int, float)) else swell_dir_val
 
     transformed = {
         "identity": {
             "device_id": data.get("device_id"), 
-            "device_name": _get_val_or_base(data, 'n', base_state, ['identity', 'device_name'])
+            "device_name": _get_val_or_base(data, 'n', base_state, ['identity', 'device_name'], None)
         },
         "network": {
             "currently_used_active_network": currently_used_active_network,
-            "source_ip": _get_val_or_base(data, 'client_ip', base_state, ['network', 'source_ip']),
-            "wifi_bssid": formatted_bssid,
-            "wifi_name_ssid": _get_val_or_base(data, 'wn', base_state, ['network', 'wifi_name_ssid'], ""),
+            "source_ip": _get_val_or_base(data, 'client_ip', base_state, ['network', 'source_ip'], None),
+            "wifi": {
+                "bssid": formatted_bssid,
+                "ssid": _get_val_or_base(data, 'wn', base_state, ['network', 'wifi', 'ssid'], None, ""),
+                "frequency_channel": _get_val_or_base(data, 'wf', base_state, ['network', 'wifi', 'frequency_channel'], None, 0),
+                "rssi_dbm": _get_val_or_base(data, 'wr', base_state, ['network', 'wifi', 'rssi_dbm'], None, 0, lambda v: -safe_int(v)),
+                "link_speed_quality_index": _get_val_or_base(data, 'ws', base_state, ['network', 'wifi', 'link_speed_quality_index'], None, -1),
+                "standard": _get_val_or_base(data, 'wt', base_state, ['network', 'wifi', 'standard'], None, -1, lambda v: WIFI_STANDARD_MAP.get(v))
+            },
             "cellular": {
                 "type": cellular_type_str, 
-                "operator": _get_val_or_base(data, 'o', base_state, ['network', 'cellular', 'operator'], ""),
-                "signal_strength_in_dbm": _get_val_or_base(data, 'r', base_state, ['network', 'cellular', 'signal_strength_in_dbm'], 0, lambda v: -safe_int(v)),
-                "signal_quality": _get_val_or_base(data, 'rq', base_state, ['network', 'cellular', 'signal_quality'], 0), 
-                "mcc": _get_val_or_base(data, 'mc', base_state, ['network', 'cellular', 'mcc'], -1), 
-                "mnc": _get_val_or_base(data, 'mn', base_state, ['network', 'cellular', 'mnc'], ""),
-                "cell_id": _get_val_or_base(data, 'ci', base_state, ['network', 'cellular', 'cell_id'], "", decode_base62),
-                "tac": _get_val_or_base(data, 'tc', base_state, ['network', 'cellular', 'tac'], -1), 
-                "timing_advance": _get_val_or_base(data, 'ta', base_state, ['network', 'cellular', 'timing_advance'], -1)
+                "operator": _get_val_or_base(data, 'o', base_state, ['network', 'cellular', 'operator'], None, ""),
+                "signal_strength_in_dbm": _get_val_or_base(data, 'r', base_state, ['network', 'cellular', 'signal_strength_in_dbm'], None, 0, lambda v: -safe_int(v)),
+                "signal_quality": _get_val_or_base(data, 'rq', base_state, ['network', 'cellular', 'signal_quality'], None, 0), 
+                "mcc": _get_val_or_base(data, 'mc', base_state, ['network', 'cellular', 'mcc'], None, -1), 
+                "mnc": _get_val_or_base(data, 'mn', base_state, ['network', 'cellular', 'mnc'], None, ""),
+                "cell_id": _get_val_or_base(data, 'ci', base_state, ['network', 'cellular', 'cell_id'], None, "", decode_base62),
+                "tac": _get_val_or_base(data, 'tc', base_state, ['network', 'cellular', 'tac'], None, -1), 
+                "timing_advance": _get_val_or_base(data, 'ta', base_state, ['network', 'cellular', 'timing_advance'], None, -1)
             },
             "bandwidth": {
-                "download_in_mbps": _get_val_or_base(data, 'd', base_state, ['network', 'bandwidth', 'download_in_mbps'], 0, lambda v: safe_float(v, 1)),
-                "upload_in_mbps": _get_val_or_base(data, 'u', base_state, ['network', 'bandwidth', 'upload_in_mbps'], 0, lambda v: safe_float(v, 1))
+                "download_in_mbps": _get_val_or_base(data, 'd', base_state, ['network', 'bandwidth', 'download_in_mbps'], None, 0, lambda v: safe_float(v, 1)),
+                "upload_in_mbps": _get_val_or_base(data, 'u', base_state, ['network', 'bandwidth', 'upload_in_mbps'], None, 0, lambda v: safe_float(v, 1))
             }
         },
         "location": {
             "latitude": lat, "longitude": lon, "coordinate_precision": precision,
-            "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], -1, safe_int), 
-            "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], -1, safe_int),
-            "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], -1, safe_int),
+            "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], None, -1, safe_int), 
+            "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], None, -1, safe_int),
+            "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], None, -1, safe_int),
         },
         "power": {
             "battery_percent": battery_percent_val, "capacity_in_mah": capacity_mah_val,
             "calculated_leftover_capacity_in_mah": leftover_capacity_mah,
-            "charging_state": _get_val_or_base(data, 'cs', base_state, ['power', 'charging_state'], None, lambda v: CHARGING_STATE_MAP.get(v)),
-            "power_save_mode": _get_val_or_base(data, 'pm', base_state, ['power', 'power_save_mode'], None, lambda v: v == 1)
+            "charging_state": _get_val_or_base(data, 'cs', base_state, ['power', 'charging_state'], None, None, lambda v: CHARGING_STATE_MAP.get(v)),
+            "power_save_mode": _get_val_or_base(data, 'pm', base_state, ['power', 'power_save_mode'], False, None, lambda v: v == 1)
         },
         "environment": {
             "weather": {
                 "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
                 "temperature_in_celsius": temp_c,
-                "feels_like_in_celsius": _get_val_or_base(data, 'apparent_temp', base_state, ['environment', 'weather', 'feels_like_in_celsius'], None, lambda v: safe_float(v, 1)),
+                "feels_like_in_celsius": _get_val_or_base(data, 'apparent_temp', base_state, ['environment', 'weather', 'feels_like_in_celsius'], None, None, lambda v: safe_float(v, 1)),
                 "assessment": get_temperature_assessment(temp_c),
-                "humidity_percent": _get_val_or_base(data, 'humidity', base_state, ['environment', 'weather', 'humidity_percent'], None, safe_int),
-                "pressure_in_hpa": _get_val_or_base(data, 'pressure_msl', base_state, ['environment', 'weather', 'pressure_in_hpa'], None, safe_int),
-                "cloud_cover_percent": _get_val_or_base(data, 'cloud_cover', base_state, ['environment', 'weather', 'cloud_cover_percent'], None, safe_int)
+                "humidity_percent": _get_val_or_base(data, 'humidity', base_state, ['environment', 'weather', 'humidity_percent'], None, None, safe_int),
+                "pressure_in_hpa": _get_val_or_base(data, 'pressure_msl', base_state, ['environment', 'weather', 'pressure_in_hpa'], None, None, safe_int),
+                "cloud_cover_percent": _get_val_or_base(data, 'cloud_cover', base_state, ['environment', 'weather', 'cloud_cover_percent'], None, None, safe_int)
             },
             "precipitation": precip_info,
             "wind": {
                 "speed_in_meters_per_second": wind_speed_ms,
-                "gusts_in_meters_per_second": _get_val_or_base(data, 'wind_gusts', base_state, ['environment', 'wind', 'gusts_in_meters_per_second'], None, lambda v: safe_float(v, 1)),
+                "gusts_in_meters_per_second": _get_val_or_base(data, 'wind_gusts', base_state, ['environment', 'wind', 'gusts_in_meters_per_second'], None, None, lambda v: safe_float(v, 1)),
                 "description": get_wind_description(wind_speed_ms),
                 "direction": wind_dir_str
             },
             "marine": {
                 "wave": {
-                    "height_in_meters": _get_val_or_base(data, 'marine_wave_height', base_state, ['environment', 'marine', 'wave', 'height_in_meters'], None, lambda v: safe_float(v, 2)),
-                    "period_in_seconds": _get_val_or_base(data, 'marine_wave_period', base_state, ['environment', 'marine', 'wave', 'period_in_seconds'], None, lambda v: safe_float(v, 1)),
+                    "height_in_meters": _get_val_or_base(data, 'marine_wave_height', base_state, ['environment', 'marine', 'wave', 'height_in_meters'], None, None, lambda v: safe_float(v, 2)),
+                    "period_in_seconds": _get_val_or_base(data, 'marine_wave_period', base_state, ['environment', 'marine', 'wave', 'period_in_seconds'], None, None, lambda v: safe_float(v, 1)),
                     "direction": wave_dir_str
                 },
                 "swell": {
-                    "height_in_meters": _get_val_or_base(data, 'marine_swell_wave_height', base_state, ['environment', 'marine', 'swell', 'height_in_meters'], None, lambda v: safe_float(v, 2)),
-                    "period_in_seconds": _get_val_or_base(data, 'marine_swell_wave_period', base_state, ['environment', 'marine', 'swell', 'period_in_seconds'], None, lambda v: safe_float(v, 1)),
+                    "height_in_meters": _get_val_or_base(data, 'marine_swell_wave_height', base_state, ['environment', 'marine', 'swell', 'height_in_meters'], None, None, lambda v: safe_float(v, 2)),
+                    "period_in_seconds": _get_val_or_base(data, 'marine_swell_wave_period', base_state, ['environment', 'marine', 'swell', 'period_in_seconds'], None, None, lambda v: safe_float(v, 1)),
                     "direction": swell_dir_str
                 }
             }
         },
         "device_state": {
-            "screen_on": _get_val_or_base(data, 'sc', base_state, ['device_state', 'screen_on'], None, lambda v: v == 1),
-            "vpn_active": _get_val_or_base(data, 'vp', base_state, ['device_state', 'vpn_active'], None, lambda v: v == 1),
-            "network_metered": _get_val_or_base(data, 'nm', base_state, ['device_state', 'network_metered'], None, lambda v: v == 1),
-            "data_activity": _get_val_or_base(data, 'da', base_state, ['device_state', 'data_activity'], -1, lambda v: DATA_ACTIVITY_MAP.get(v)),
-            "system_audio_state": _get_val_or_base(data, 'au', base_state, ['device_state', 'system_audio_state'], None, lambda v: SYSTEM_AUDIO_MAP.get(v)),
-            "camera_active": _get_val_or_base(data, 'ca', base_state, ['device_state', 'camera_active'], None, lambda v: v == 1),
-            "flashlight_on": _get_val_or_base(data, 'fl', base_state, ['device_state', 'flashlight_on'], None, lambda v: v == 1),
-            "phone_activity_state": _get_val_or_base(data, 'pa', base_state, ['device_state', 'phone_activity_state'], -1, lambda v: PHONE_ACTIVITY_MAP.get(v))
+            "screen_on": _get_val_or_base(data, 'sc', base_state, ['device_state', 'screen_on'], False, None, lambda v: v == 1),
+            "vpn_active": _get_val_or_base(data, 'vp', base_state, ['device_state', 'vpn_active'], False, None, lambda v: v == 1),
+            "network_metered": _get_val_or_base(data, 'nm', base_state, ['device_state', 'network_metered'], False, None, lambda v: v == 1),
+            "data_activity": _get_val_or_base(data, 'da', base_state, ['device_state', 'data_activity'], None, -1, lambda v: DATA_ACTIVITY_MAP.get(v)),
+            "system_audio_state": _get_val_or_base(data, 'au', base_state, ['device_state', 'system_audio_state'], None, None, lambda v: SYSTEM_AUDIO_MAP.get(v)),
+            "camera_active": _get_val_or_base(data, 'ca', base_state, ['device_state', 'camera_active'], False, None, lambda v: v == 1),
+            "flashlight_on": _get_val_or_base(data, 'fl', base_state, ['device_state', 'flashlight_on'], False, None, lambda v: v == 1),
+            "phone_activity_state": _get_val_or_base(data, 'pa', base_state, ['device_state', 'phone_activity_state'], None, -1, lambda v: PHONE_ACTIVITY_MAP.get(v))
         },
         "sensors": {
-            "device_temperature_celsius": _get_val_or_base(data, 'dt', base_state, ['sensors', 'device_temperature_celsius']), 
-            "ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'ambient_light_level'], -1),
-            "barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'barometer_hpa'], 0), 
-            "steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'steps_since_boot'], -1),
-            "proximity_near": _get_val_or_base(data, 'px', base_state, ['sensors', 'proximity_near'], -1, lambda v: v == 0),
-        },
-        "wifi_details": {
-            "wifi_frequency_channel": _get_val_or_base(data, 'wf', base_state, ['wifi_details', 'wifi_frequency_channel'], 0),
-            "wifi_rssi_dbm": _get_val_or_base(data, 'wr', base_state, ['wifi_details', 'wifi_rssi_dbm'], 0, lambda v: -safe_int(v)),
-            "wifi_link_speed_quality_index": _get_val_or_base(data, 'ws', base_state, ['wifi_details', 'wifi_link_speed_quality_index'], -1),
-            "wifi_standard": _get_val_or_base(data, 'wt', base_state, ['wifi_details', 'wifi_standard'], -1, lambda v: WIFI_STANDARD_MAP.get(v))
+            "device_temperature_celsius": _get_val_or_base(data, 'dt', base_state, ['sensors', 'device_temperature_celsius'], None), 
+            "ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'ambient_light_level'], None, -1),
+            "barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'barometer_hpa'], None, 0), 
+            "steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'steps_since_boot'], None, -1),
+            "proximity_near": _get_val_or_base(data, 'px', base_state, ['sensors', 'proximity_near'], False, -1, lambda v: v == 0),
         },
         "diagnostics": {
             "ingest_request_id": data.get("request_id"), "weather": weather_diag,
