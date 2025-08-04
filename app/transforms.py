@@ -46,6 +46,34 @@ def get_wind_direction_compass(degrees: Optional[float]) -> Optional[str]:
     arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
     return arr[(val % 16)]
 
+def get_timezone_offset_str(lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    if lat is None or lon is None or not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+
+    if lat == 90.0 or lat == -90.0:
+        return "UTC+0"
+
+    try:
+        tz_name = tf.timezone_at(lng=lon, lat=lat)
+        if tz_name:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            local_tz = pytz.timezone(tz_name)
+            offset = now_utc.astimezone(local_tz).utcoffset()
+            if offset is not None:
+                secs = offset.total_seconds()
+                sign = "+" if secs >= 0 else "-"
+                h, rem = divmod(abs(secs), 3600)
+                m, _ = divmod(rem, 60)
+                if m == 0:
+                    return f"UTC{sign}{int(h)}"
+                return f"UTC{sign}{int(h)}:{int(m):02d}"
+
+        offset_hours = round(lon / 15)
+        sign = "+" if offset_hours >= 0 else "-"
+        return f"UTC{sign}{abs(offset_hours)}"
+    except Exception:
+        return None
+
 def get_temperature_assessment(temp: Optional[float]) -> Optional[str]:
     if temp is None: return None
     if temp < 0: return "Freezing"
@@ -65,6 +93,21 @@ def get_wind_description(speed_ms: Optional[float]) -> Optional[str]:
     if speed_ms < 10.8: return "Fresh breeze"
     if speed_ms < 13.9: return "Strong breeze"
     return "High wind"
+
+def calculate_wind_chill(temp_c: Optional[float], wind_speed_ms: Optional[float]) -> Optional[float]:
+    if temp_c is None or wind_speed_ms is None:
+        return None
+
+    if temp_c > 10.0 or wind_speed_ms < 1.34:
+        return None
+
+    wind_speed_kmh = wind_speed_ms * 3.6
+    wind_chill = 13.12 + 0.6215 * temp_c - 11.37 * (wind_speed_kmh ** 0.16) + 0.3965 * temp_c * (wind_speed_kmh ** 0.16)
+
+    if wind_chill > temp_c:
+        return None
+
+    return round(wind_chill, 1)
 
 def get_precipitation_info(precip_mm: Optional[float], code: Optional[int]) -> Dict[str, str]:
     precip_type_map = {
@@ -143,6 +186,8 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         lon = get_nested(base_state, ['location', 'longitude'])
         precision_meters = get_nested(base_state, ['location', 'geohash_precision_in_meters'])
 
+    location_tz_str = get_timezone_offset_str(lat, lon)
+
     cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], None, -1, lambda v: CELLULAR_TYPE_MAP.get(v))
     formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi', 'bssid'], None, "", decode_bssid_base64)
     currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type_str
@@ -155,9 +200,14 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
 
     temp_c = _get_val_or_base(data, 'temperature', base_state, ['environment', 'weather', 'temperature_in_celsius'], None, None, lambda v: safe_float(v, 1))
     precip_val = _get_val_or_base(data, 'precipitation', base_state, ['environment', 'precipitation', 'value_mm'], None, None, safe_float)
-    weather_code = _get_val_or_base(data, 'code', base_state, ['environment', 'weather', 'code'], None, None, safe_int)
+    weather_code = _get_val_or_base(data, 'code', base_state, ['environment', 'weather', 'code'], None, None, safe_int) or get_nested(base_state, ['environment', 'weather', 'code'])
     wind_speed_ms = _get_val_or_base(data, 'wind_speed', base_state, ['environment', 'wind', 'speed_in_meters_per_second'], None, None, lambda v: safe_float(v, 1))
     precip_info = get_precipitation_info(precip_val, weather_code)
+    wind_chill_c = calculate_wind_chill(temp_c, wind_speed_ms)
+    
+    weather_description = WEATHER_CODE_DESCRIPTIONS.get(weather_code)
+    if weather_description is None:
+        weather_description = get_nested(base_state, ['environment', 'weather', 'description'])
     
     fetch_lat = safe_float(data.get('weather_fetch_lat', get_nested(base_state, ['diagnostics', 'weather', 'weather_fetch_lat'])))
     fetch_lon = safe_float(data.get('weather_fetch_lon', get_nested(base_state, ['diagnostics', 'weather', 'weather_fetch_lon'])))
@@ -251,6 +301,7 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
             "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], None, -1, safe_int), 
             "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], None, -1, safe_int),
             "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], None, -1, safe_int),
+            "location_actual_timezone": location_tz_str
         },
         "power": {
             "battery_percent": battery_percent_val, "capacity_in_mah": capacity_mah_val,
@@ -260,9 +311,10 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         },
         "environment": {
             "weather": {
-                "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
+                "description": weather_description,
                 "temperature_in_celsius": temp_c,
                 "feels_like_in_celsius": _get_val_or_base(data, 'apparent_temp', base_state, ['environment', 'weather', 'feels_like_in_celsius'], None, None, lambda v: safe_float(v, 1)),
+                "wind_chill_in_celsius": wind_chill_c,
                 "assessment": get_temperature_assessment(temp_c),
                 "humidity_percent": _get_val_or_base(data, 'humidity', base_state, ['environment', 'weather', 'humidity_percent'], None, None, safe_int),
                 "pressure_in_hpa": _get_val_or_base(data, 'pressure_msl', base_state, ['environment', 'weather', 'pressure_in_hpa'], None, None, safe_int),
@@ -300,10 +352,10 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         },
         "sensors": {
             "device_temperature_celsius": _get_val_or_base(data, 'dt', base_state, ['sensors', 'device_temperature_celsius'], None), 
-            "ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'ambient_light_level'], None, -1),
-            "barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'barometer_hpa'], None, 0), 
-            "steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'steps_since_boot'], None, -1),
-            "proximity_near": _get_val_or_base(data, 'px', base_state, ['sensors', 'proximity_near'], False, -1, lambda v: v == 0),
+            "device_ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'device_ambient_light_level'], None, -1),
+            "device_barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'device_barometer_hpa'], None, 0), 
+            "device_steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'device_steps_since_boot'], None, -1),
+            "device_proximity_sensor_closer_than_5cm": _get_val_or_base(data, 'px', base_state, ['sensors', 'device_proximity_sensor_closer_than_5cm'], False, -1, lambda v: v == 0),
         },
         "diagnostics": {
             "ingest_request_id": data.get("request_id"), "weather": weather_diag,

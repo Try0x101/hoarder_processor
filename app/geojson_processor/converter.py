@@ -53,6 +53,8 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         cellular = network.get("cellular", {})
         device_state = payload.get("device_state", {})
         sensors = payload.get("sensors", {})
+        environment = payload.get("environment", {})
+        weather = environment.get("weather", {})
         
         device_id = identity.get("device_id")
         device_name = identity.get("device_name")
@@ -67,6 +69,7 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "gps_altitude_in_meters": location.get("altitude_in_meters"),
             "gps_accuracy_in_meters": location.get("accuracy_in_meters"),
             "geohash_precision_in_meters": precision_meters,
+            "location_actual_timezone": location.get("location_actual_timezone"),
             "speed_in_kmh": location.get("speed_in_kmh"),
             "source_ip": network.get("source_ip"),
             "active_network": network.get("currently_used_active_network"),
@@ -76,11 +79,13 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "battery_percent": power.get("battery_percent"),
             "phone_activity_state": device_state.get("phone_activity_state"),
             "screen_on": device_state.get("screen_on"),
-            "proximity_near": sensors.get("proximity_near"),
+            "device_proximity_sensor_closer_than_5cm": sensors.get("device_proximity_sensor_closer_than_5cm"),
             "device_temperature_celsius": sensors.get("device_temperature_celsius"),
-            "ambient_light_level": sensors.get("ambient_light_level"),
-            "barometer_hpa": sensors.get("barometer_hpa"),
-            "steps_since_boot": sensors.get("steps_since_boot"),
+            "device_ambient_light_level": sensors.get("device_ambient_light_level"),
+            "device_barometer_hpa": sensors.get("device_barometer_hpa"),
+            "device_steps_since_boot": sensors.get("device_steps_since_boot"),
+            "temperature_in_celsius": weather.get("temperature_in_celsius"),
+            "wind_chill_in_celsius": weather.get("wind_chill_in_celsius"),
         }
 
         feature = {
