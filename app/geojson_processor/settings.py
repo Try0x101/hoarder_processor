@@ -1,6 +1,6 @@
 import os
-from app.database import DB_PATH
 
+DB_PATH = "/opt/hoarder_processor/hoarder_processor.db"
 OUTPUT_DIR = "/opt/hoarder_processor/geojson_output"
 STATE_FILE_PATH = "/opt/hoarder_processor/geojson_processor_state.json"
 

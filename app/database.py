@@ -7,7 +7,27 @@ import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 DB_FILE = "hoarder_processor.db"
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", DB_FILE)
+DB_PATH = "/opt/hoarder_processor/hoarder_processor.db"
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS enriched_telemetry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_ingest_id INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    enriched_payload TEXT NOT NULL,
+    calculated_event_timestamp TEXT NOT NULL,
+    request_size_bytes INTEGER NOT NULL DEFAULT 0,
+    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(original_ingest_id)
+);
+CREATE TABLE IF NOT EXISTS latest_enriched_state (
+    device_id TEXT PRIMARY KEY,
+    enriched_payload TEXT NOT NULL,
+    last_updated_ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enriched_device_event_time ON enriched_telemetry (device_id, calculated_event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_enriched_event_time ON enriched_telemetry (calculated_event_timestamp DESC);
+"""
 
 REDIS_SENTINEL_HOSTS = [('localhost', 26379), ('localhost', 26380), ('localhost', 26381)]
 REDIS_MASTER_NAME = "mymaster"
@@ -20,6 +40,10 @@ DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
 DEVICE_BATCH_TS_KEY_PREFIX = "device:batch_ts"
 DEVICE_BATCH_TS_TTL_SECONDS = 6 * 3600
+
+async def ensure_db_initialized(conn: aiosqlite.Connection):
+    await conn.executescript(DB_SCHEMA)
+    await conn.commit()
 
 def _get_redis_position_key(device_id: str) -> str:
     return f"{DEVICE_POSITION_KEY_PREFIX}:{device_id}"
@@ -120,6 +144,7 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
 
     try:
         async with aiosqlite.connect(DB_PATH, timeout=30) as db:
+            await ensure_db_initialized(db)
             await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute("PRAGMA synchronous=NORMAL;")
 

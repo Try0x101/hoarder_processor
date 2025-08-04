@@ -14,7 +14,8 @@ from app.database import (
     get_latest_state_for_device, save_stateful_data, DB_PATH,
     REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
     REDIS_DB_POSITION, REDIS_DB_METRICS,
-    get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts
+    get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts,
+    ensure_db_initialized
 )
 from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
 from app.weather import get_weather_enrichment
@@ -52,6 +53,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
     try:
         redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
         async with aiosqlite.connect(DB_PATH) as db:
+            await ensure_db_initialized(db)
             for device_id, device_records in records_by_device.items():
                 sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
                 
@@ -143,11 +145,14 @@ def process_and_store_data(records: List[Dict[str, Any]]):
 
 async def _async_cleanup_db():
     try:
+        if not os.path.exists(DB_PATH):
+            return
         total_size = sum(os.path.getsize(DB_PATH + s) for s in ["", "-wal", "-shm"] if os.path.exists(DB_PATH + s))
         if total_size < MAX_DB_SIZE_BYTES:
             return
 
         async with aiosqlite.connect(DB_PATH, timeout=120) as db:
+            await ensure_db_initialized(db)
             while total_size > TARGET_DB_SIZE_BYTES:
                 cursor = await db.execute(
                     "DELETE FROM enriched_telemetry WHERE id IN (SELECT id FROM enriched_telemetry ORDER BY calculated_event_timestamp ASC, id ASC LIMIT 1000)"

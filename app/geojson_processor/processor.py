@@ -1,6 +1,8 @@
 import aiosqlite
 import asyncio
+import os
 from . import settings, state, converter, writer
+from app.database import ensure_db_initialized
 
 async def fetch_new_records(conn: aiosqlite.Connection, last_id: int):
     conn.row_factory = aiosqlite.Row
@@ -24,6 +26,7 @@ async def run_processor_once():
         await manager.start_writing()
         
         async with aiosqlite.connect(settings.DB_PATH, timeout=30) as db:
+            await ensure_db_initialized(db)
             await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute("PRAGMA synchronous=NORMAL;")
             
