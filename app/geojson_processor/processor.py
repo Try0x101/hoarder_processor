@@ -30,26 +30,40 @@ async def run_processor_once():
             await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute("PRAGMA synchronous=NORMAL;")
             
-            while True:
-                records = await fetch_new_records(db, last_processed_id)
-                if not records:
-                    print("GEOJSON: No new records found.")
-                    break
+            records = await fetch_new_records(db, last_processed_id)
+            if not records:
+                cursor = await db.execute("SELECT MAX(id) FROM enriched_telemetry")
+                max_db_id_row = await cursor.fetchone()
+                max_db_id = max_db_id_row[0] if max_db_id_row and max_db_id_row[0] is not None else 0
+                
+                if last_processed_id > 0 and max_db_id < last_processed_id:
+                    print(f"GEOJSON: Stale state detected. Max DB ID ({max_db_id}) is less than last processed ID ({last_processed_id}). Resetting state.")
+                    await state.save_last_processed_id(0)
+                    last_processed_id = 0
+                    records = await fetch_new_records(db, last_processed_id)
 
-                print(f"GEOJSON: Fetched {len(records)} new records.")
-                features = []
-                for row in records:
-                    feature = converter.process_row_to_geojson(dict(row))
-                    if feature:
-                        features.append(feature)
-                
-                if features:
-                    await manager.write_features(features)
-                
-                new_last_id = records[-1]['id']
-                await state.save_last_processed_id(new_last_id)
-                last_processed_id = new_last_id
-                print(f"GEOJSON: Advanced to last processed ID: {last_processed_id}")
+            if not records:
+                print("GEOJSON: No new records found.")
+            else:
+                while records:
+                    print(f"GEOJSON: Fetched {len(records)} new records.")
+                    features = []
+                    for row in records:
+                        feature = converter.process_row_to_geojson(dict(row))
+                        if feature:
+                            features.append(feature)
+                    
+                    if features:
+                        await manager.write_features(features)
+                    
+                    new_last_id = records[-1]['id']
+                    await state.save_last_processed_id(new_last_id)
+                    last_processed_id = new_last_id
+                    print(f"GEOJSON: Advanced to last processed ID: {last_processed_id}")
+                    
+                    if len(records) < settings.QUERY_BATCH_SIZE:
+                        break 
+                    records = await fetch_new_records(db, last_processed_id)
 
     except aiosqlite.Error as e:
         print(f"GeoJSON Processor DB Error: {e}")

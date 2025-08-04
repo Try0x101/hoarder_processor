@@ -58,6 +58,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
                 
                 base_ts = await get_device_batch_ts(redis_client, device_id)
+                current_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
 
                 for record in sorted_records:
                     payload = record.get("payload", {})
@@ -84,19 +85,17 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     request_size_bytes = len(orjson.dumps(record))
                     flat_data = prepare_flat_data(record)
                     
-                    base_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
                     current_record_ts = flat_data.get("calculated_event_timestamp")
-
                     if not current_record_ts: continue
 
-                    simple_base_state = reconstruct_from_freshness(base_freshness_payload) if base_freshness_payload else {}
+                    simple_base_state = reconstruct_from_freshness(current_freshness_payload) if current_freshness_payload else {}
                     
                     flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
 
                     new_full_simple_state = transform_payload(flat_data, simple_base_state)
                     
-                    latest_freshness_payload = update_freshness_from_full_state(
-                        base_freshness_payload or {},
+                    new_freshness_payload = update_freshness_from_full_state(
+                        current_freshness_payload or {},
                         new_full_simple_state,
                         current_record_ts
                     )
@@ -105,10 +104,12 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                         "original_ingest_id": flat_data.get("original_ingest_id"),
                         "device_id": device_id,
                         "historical_payload": new_full_simple_state,
-                        "latest_payload": latest_freshness_payload,
+                        "latest_payload": new_freshness_payload,
                         "calculated_event_timestamp": current_record_ts,
                         "request_size_bytes": request_size_bytes
                     })
+                    
+                    current_freshness_payload = new_freshness_payload
 
         if records_to_save:
             await save_stateful_data(records_to_save)

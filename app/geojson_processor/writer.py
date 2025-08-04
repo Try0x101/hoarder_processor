@@ -86,12 +86,12 @@ class GeoJSONManager:
         await self._file_handle.close()
         self._file_handle = None
 
-        if not self._features_written and not self.started_from_existing:
-            print(f"GEOJSON Writer: No new features written and not continuing an existing file. Deleting temp file: {self._temp_path}")
+        if self.started_from_existing and not self._features_written:
+            print(f"GEOJSON Writer: No new features. Deleting temp file and keeping original: {self.latest_file_path}")
             try:
                 os.remove(self._temp_path)
-            except OSError as e:
-                print(f"GEOJSON Writer: Error deleting temp file {self._temp_path}: {e}")
+            except OSError:
+                pass
             return
 
         print(f"GEOJSON Writer: Finalizing GeoJSON file. Features written: {self._features_written}. Continued from existing: {self.started_from_existing}.")

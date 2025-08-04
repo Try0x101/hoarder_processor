@@ -20,6 +20,19 @@ def _to_unix_timestamp(ts_str: Optional[str]) -> Optional[int]:
     except (ValueError, TypeError):
         return None
 
+def _get_decimal_places_from_meters(meters: Optional[int]) -> int:
+    if meters is None:
+        return 7
+    if meters > 1000:
+        return 3
+    if meters > 100:
+        return 4
+    if meters > 5:
+        return 5
+    if meters > 0:
+        return 6
+    return 7
+
 def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         payload = orjson.loads(db_row["enriched_payload"])
@@ -31,25 +44,43 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if lon is None or lat is None:
             return None
 
+        precision_meters = location.get("geohash_precision_in_meters")
+        decimal_places = _get_decimal_places_from_meters(precision_meters)
+        
         identity = payload.get("identity", {})
         network = payload.get("network", {})
         power = payload.get("power", {})
         cellular = network.get("cellular", {})
+        device_state = payload.get("device_state", {})
+        sensors = payload.get("sensors", {})
+        
+        device_id = identity.get("device_id")
+        device_name = identity.get("device_name")
+        device_id_name = f"{device_id} {device_name}" if device_id and device_name else device_id
 
         properties = {
-            "latitude": lat,
-            "longitude": lon,
             "internal_id": db_row["id"],
-            "device_id": identity.get("device_id"),
-            "device_name": identity.get("device_name"),
-            "timestamp": _to_unix_timestamp(db_row.get("calculated_event_timestamp")),
-            "active_network": network.get("currently_used_active_network"),
-            "operator": cellular.get("operator"),
-            "battery_percent": power.get("battery_percent"),
+            "device_id_name": device_id_name,
+            "data_timestamp": _to_unix_timestamp(db_row.get("calculated_event_timestamp")),
+            "latitude": round(lat, decimal_places),
+            "longitude": round(lon, decimal_places),
+            "gps_altitude_in_meters": location.get("altitude_in_meters"),
+            "gps_accuracy_in_meters": location.get("accuracy_in_meters"),
+            "geohash_precision_in_meters": precision_meters,
             "speed_in_kmh": location.get("speed_in_kmh"),
-            "altitude_in_meters": location.get("altitude_in_meters"),
-            "accuracy_in_meters": location.get("accuracy_in_meters"),
+            "source_ip": network.get("source_ip"),
+            "active_network": network.get("currently_used_active_network"),
+            "cell_network_type": cellular.get("type"),
+            "cell_operator": cellular.get("operator"),
             "signal_strength_in_dbm": cellular.get("signal_strength_in_dbm"),
+            "battery_percent": power.get("battery_percent"),
+            "phone_activity_state": device_state.get("phone_activity_state"),
+            "screen_on": device_state.get("screen_on"),
+            "proximity_near": sensors.get("proximity_near"),
+            "device_temperature_celsius": sensors.get("device_temperature_celsius"),
+            "ambient_light_level": sensors.get("ambient_light_level"),
+            "barometer_hpa": sensors.get("barometer_hpa"),
+            "steps_since_boot": sensors.get("steps_since_boot"),
         }
 
         feature = {

@@ -8,8 +8,10 @@ import redis.asyncio as redis
 import geohash as pygeohash
 import base64
 
-GEOHASH_LEN_TO_DECIMALS = {
-    5: 4, 6: 4, 7: 5, 8: 6, 9: 7, 10: 8, 11: 8, 12: 8
+GEOHASH_LEN_TO_METERS = {
+    1: 5000000, 2: 1250000, 3: 156000, 4: 39000,
+    5: 4900, 6: 1200, 7: 152, 8: 38,
+    9: 5, 10: 1, 11: 1, 12: 1
 }
 
 def get_nested(d: dict, keys: list, default: Any = None) -> Any:
@@ -25,8 +27,8 @@ def decode_geohash(geohash_str: str) -> Optional[Tuple[float, float, int]]:
         return None
     try:
         lat, lon = pygeohash.decode(geohash_str)
-        precision = GEOHASH_LEN_TO_DECIMALS.get(len(geohash_str), 3 if len(geohash_str) < 5 else 8)
-        return float(lat), float(lon), precision
+        precision_meters = GEOHASH_LEN_TO_METERS.get(len(geohash_str), 5000000)
+        return float(lat), float(lon), precision_meters
     except (ValueError, TypeError):
         return None
 

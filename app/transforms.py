@@ -129,19 +129,19 @@ def _get_val_or_base(data: Dict[str, Any], key: str, base_state: Dict[str, Any],
     return get_nested(base_state, path, default)
 
 def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[str, Any]:
-    lat, lon, precision = None, None, None
+    lat, lon, precision_meters = None, None, None
     if 'g' in data and data['g'] != "":
         decoded = decode_geohash(data['g'])
         if decoded:
-            lat, lon, precision = decoded
+            lat, lon, precision_meters = decoded
         else:
             lat = get_nested(base_state, ['location', 'latitude'])
             lon = get_nested(base_state, ['location', 'longitude'])
-            precision = get_nested(base_state, ['location', 'coordinate_precision'])
+            precision_meters = get_nested(base_state, ['location', 'geohash_precision_in_meters'])
     else:
         lat = get_nested(base_state, ['location', 'latitude'])
         lon = get_nested(base_state, ['location', 'longitude'])
-        precision = get_nested(base_state, ['location', 'coordinate_precision'])
+        precision_meters = get_nested(base_state, ['location', 'geohash_precision_in_meters'])
 
     cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], None, -1, lambda v: CELLULAR_TYPE_MAP.get(v))
     formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi', 'bssid'], None, "", decode_bssid_base64)
@@ -247,7 +247,7 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
             }
         },
         "location": {
-            "latitude": lat, "longitude": lon, "coordinate_precision": precision,
+            "latitude": lat, "longitude": lon, "geohash_precision_in_meters": precision_meters,
             "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], None, -1, safe_int), 
             "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], None, -1, safe_int),
             "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], None, -1, safe_int),

@@ -22,7 +22,7 @@ router = APIRouter(
 KEY_ORDERS = {
     'data': ['identity', 'location', 'power', 'device_state', 'sensors', 'network', 'environment', 'app_settings', 'diagnostics'],
     'identity': ['device_name', 'device_id'],
-    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'coordinate_precision'],
+    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'geohash_precision_in_meters'],
     'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
     'device_state': ['screen_on', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
     'sensors': ['device_temperature_celsius', 'ambient_light_level', 'barometer_hpa', 'steps_since_boot', 'proximity_near'],
@@ -41,6 +41,19 @@ KEY_ORDERS = {
     'diagnostics_toggles': ['master_switch', 'general_state', 'sensor_state', 'wifi_details'],
     'system_status': ['permissions', 'sensor_health', 'calibration']
 }
+
+def _get_decimal_places_from_meters(meters: Optional[int]) -> int:
+    if meters is None:
+        return 7
+    if meters > 1000:
+        return 3
+    if meters > 100:
+        return 4
+    if meters > 5:
+        return 5
+    if meters > 0:
+        return 6
+    return 7
 
 def _apply_custom_sorting(data: Any, level_key: str = 'data') -> Any:
     if not isinstance(data, dict):
@@ -135,13 +148,14 @@ async def get_device_history(
         if 'app_settings' in payload:
             payload['app_settings'] = group_and_rename_app_settings(payload.get('app_settings', {}))
         
-        precision = get_nested(payload, ['location', 'coordinate_precision'])
-        if precision is not None and 'location' in payload and payload.get('location'):
+        precision_meters = get_nested(payload, ['location', 'geohash_precision_in_meters'])
+        if precision_meters is not None and 'location' in payload and payload.get('location'):
+            decimal_places = _get_decimal_places_from_meters(precision_meters)
             location = payload['location']
             if 'latitude' in location and location['latitude'] is not None:
-                location['latitude'] = round(location['latitude'], precision)
+                location['latitude'] = round(location['latitude'], decimal_places)
             if 'longitude' in location and location['longitude'] is not None:
-                location['longitude'] = round(location['longitude'], precision)
+                location['longitude'] = round(location['longitude'], decimal_places)
         
         processed_payloads.append(payload)
 
@@ -228,14 +242,15 @@ async def get_latest_device_data(request: Request, device_id: str):
             data_payload, freshness_info = parse_freshness_payload(freshness_payload)
 
             if 'location' in data_payload and data_payload.get('location'):
-                precision = get_nested(data_payload, ['location', 'coordinate_precision'])
-                if precision is not None:
+                precision_meters = get_nested(data_payload, ['location', 'geohash_precision_in_meters'])
+                if precision_meters is not None:
+                    decimal_places = _get_decimal_places_from_meters(precision_meters)
                     lat = data_payload['location'].get('latitude')
                     lon = data_payload['location'].get('longitude')
                     if lat is not None:
-                        data_payload['location']['latitude'] = round(lat, precision)
+                        data_payload['location']['latitude'] = round(lat, decimal_places)
                     if lon is not None:
-                        data_payload['location']['longitude'] = round(lon, precision)
+                        data_payload['location']['longitude'] = round(lon, decimal_places)
 
             if 'app_settings' in data_payload and isinstance(data_payload['app_settings'], dict):
                 data_payload['app_settings'] = group_and_rename_app_settings(data_payload['app_settings'])
