@@ -148,10 +148,10 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
     if battery_percent_val is not None and capacity_mah_val is not None and capacity_mah_val > 0:
         leftover_capacity_mah = int(round((battery_percent_val / 100.0) * capacity_mah_val))
 
-    temp_c = safe_float(data.get('temperature', get_nested(base_state, ['environment', 'weather', 'temperature_in_celsius'])), 1)
-    precip_val = safe_float(data.get('precipitation', get_nested(base_state, ['environment', 'precipitation', 'value_mm'])))
-    weather_code = safe_int(data.get('code', get_nested(base_state, ['environment', 'weather', 'code'])))
-    wind_speed_ms = safe_float(data.get('wind_speed', get_nested(base_state, ['environment', 'wind', 'speed_in_meters_per_second'])), 1)
+    temp_c = _get_val_or_base(data, 'temperature', base_state, ['environment', 'weather', 'temperature_in_celsius'], None, lambda v: safe_float(v, 1))
+    precip_val = _get_val_or_base(data, 'precipitation', base_state, ['environment', 'precipitation', 'value_mm'], None, safe_float)
+    weather_code = _get_val_or_base(data, 'code', base_state, ['environment', 'weather', 'code'], None, safe_int)
+    wind_speed_ms = _get_val_or_base(data, 'wind_speed', base_state, ['environment', 'wind', 'speed_in_meters_per_second'], None, lambda v: safe_float(v, 1))
     precip_info = get_precipitation_info(precip_val, weather_code)
     
     fetch_lat = safe_float(data.get('weather_fetch_lat', get_nested(base_state, ['diagnostics', 'weather', 'weather_fetch_lat'])))
@@ -200,6 +200,15 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
     new_app_settings_update = data.get('ad', {})
     merged_app_settings = {**old_app_settings, **new_app_settings_update}
 
+    wind_dir_val = _get_val_or_base(data, 'wind_direction', base_state, ['environment', 'wind', 'direction'])
+    wind_dir_str = get_wind_direction_compass(safe_float(wind_dir_val)) if isinstance(wind_dir_val, (int, float)) else wind_dir_val
+
+    wave_dir_val = _get_val_or_base(data, 'marine_wave_direction', base_state, ['environment', 'marine', 'wave', 'direction'])
+    wave_dir_str = get_wind_direction_compass(safe_float(wave_dir_val)) if isinstance(wave_dir_val, (int, float)) else wave_dir_val
+
+    swell_dir_val = _get_val_or_base(data, 'marine_swell_wave_direction', base_state, ['environment', 'marine', 'swell', 'direction'])
+    swell_dir_str = get_wind_direction_compass(safe_float(swell_dir_val)) if isinstance(swell_dir_val, (int, float)) else swell_dir_val
+
     transformed = {
         "identity": {
             "device_id": data.get("device_id"), 
@@ -241,19 +250,31 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         "environment": {
             "weather": {
                 "description": WEATHER_CODE_DESCRIPTIONS.get(weather_code),
-                "temperature_in_celsius": temp_c, "feels_like_in_celsius": safe_float(data.get('apparent_temp', get_nested(base_state, ['environment', 'weather', 'feels_like_in_celsius'])), 1),
-                "assessment": get_temperature_assessment(temp_c), "humidity_percent": safe_int(data.get('humidity', get_nested(base_state, ['environment', 'weather', 'humidity_percent']))),
-                "pressure_in_hpa": safe_int(data.get('pressure_msl', get_nested(base_state, ['environment', 'weather', 'pressure_in_hpa']))), "cloud_cover_percent": safe_int(data.get('cloud_cover', get_nested(base_state, ['environment', 'weather', 'cloud_cover_percent'])))
+                "temperature_in_celsius": temp_c,
+                "feels_like_in_celsius": _get_val_or_base(data, 'apparent_temp', base_state, ['environment', 'weather', 'feels_like_in_celsius'], None, lambda v: safe_float(v, 1)),
+                "assessment": get_temperature_assessment(temp_c),
+                "humidity_percent": _get_val_or_base(data, 'humidity', base_state, ['environment', 'weather', 'humidity_percent'], None, safe_int),
+                "pressure_in_hpa": _get_val_or_base(data, 'pressure_msl', base_state, ['environment', 'weather', 'pressure_in_hpa'], None, safe_int),
+                "cloud_cover_percent": _get_val_or_base(data, 'cloud_cover', base_state, ['environment', 'weather', 'cloud_cover_percent'], None, safe_int)
             },
             "precipitation": precip_info,
             "wind": {
-                "speed_in_meters_per_second": wind_speed_ms, "gusts_in_meters_per_second": safe_float(data.get('wind_gusts', get_nested(base_state, ['environment', 'wind', 'gusts_in_meters_per_second'])), 1),
+                "speed_in_meters_per_second": wind_speed_ms,
+                "gusts_in_meters_per_second": _get_val_or_base(data, 'wind_gusts', base_state, ['environment', 'wind', 'gusts_in_meters_per_second'], None, lambda v: safe_float(v, 1)),
                 "description": get_wind_description(wind_speed_ms),
-                "direction": get_wind_direction_compass(safe_float(data.get('wind_direction', get_nested(base_state, ['environment', 'wind', 'direction_degrees']))))
+                "direction": wind_dir_str
             },
             "marine": {
-                "wave": { "height_in_meters": safe_float(data.get('marine_wave_height'), 2), "period_in_seconds": safe_float(data.get('marine_wave_period'), 1), "direction": get_wind_direction_compass(safe_float(data.get('marine_wave_direction')))},
-                "swell": { "height_in_meters": safe_float(data.get('marine_swell_wave_height'), 2), "period_in_seconds": safe_float(data.get('marine_swell_wave_period'), 1), "direction": get_wind_direction_compass(safe_float(data.get('marine_swell_wave_direction')))}
+                "wave": {
+                    "height_in_meters": _get_val_or_base(data, 'marine_wave_height', base_state, ['environment', 'marine', 'wave', 'height_in_meters'], None, lambda v: safe_float(v, 2)),
+                    "period_in_seconds": _get_val_or_base(data, 'marine_wave_period', base_state, ['environment', 'marine', 'wave', 'period_in_seconds'], None, lambda v: safe_float(v, 1)),
+                    "direction": wave_dir_str
+                },
+                "swell": {
+                    "height_in_meters": _get_val_or_base(data, 'marine_swell_wave_height', base_state, ['environment', 'marine', 'swell', 'height_in_meters'], None, lambda v: safe_float(v, 2)),
+                    "period_in_seconds": _get_val_or_base(data, 'marine_swell_wave_period', base_state, ['environment', 'marine', 'swell', 'period_in_seconds'], None, lambda v: safe_float(v, 1)),
+                    "direction": swell_dir_str
+                }
             }
         },
         "device_state": {

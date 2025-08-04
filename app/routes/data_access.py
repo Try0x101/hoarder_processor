@@ -20,20 +20,20 @@ router = APIRouter(
 )
 
 KEY_ORDERS = {
-    'data': ['identity', 'location', 'network', 'power', 'environment', 'device_state', 'sensors', 'wifi_details', 'diagnostics', 'app_settings'],
+    'data': ['identity', 'location', 'power', 'device_state', 'sensors', 'network', 'environment', 'app_settings', 'diagnostics'],
     'identity': ['device_name', 'device_id'],
     'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'coordinate_precision'],
-    'network': ['currently_used_active_network', 'source_ip', 'wifi_bssid', 'wifi_name_ssid', 'bandwidth', 'cellular'],
+    'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
+    'device_state': ['screen_on', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
+    'sensors': ['device_temperature_celsius', 'ambient_light_level', 'barometer_hpa', 'steps_since_boot', 'proximity_near'],
+    'network': ['currently_used_active_network', 'source_ip', 'wifi', 'bandwidth', 'cellular'],
+    'wifi': ['ssid', 'bssid', 'frequency_channel', 'rssi_dbm', 'link_speed_quality_index', 'standard'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
     'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'signal_quality', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],
-    'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
     'environment': ['weather', 'precipitation', 'wind', 'marine'],
     'weather': ['temperature_in_celsius', 'feels_like_in_celsius', 'description', 'assessment', 'humidity_percent', 'pressure_in_hpa', 'cloud_cover_percent'],
     'precipitation': ['type', 'intensity', 'summary'],
     'wind': ['speed_in_meters_per_second', 'gusts_in_meters_per_second', 'direction', 'description'],
-    'device_state': ['screen_on', 'power_save_mode', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
-    'sensors': ['device_temperature_celsius', 'ambient_light_level', 'barometer_hpa', 'steps_since_boot', 'proximity_near'],
-    'wifi_details': ['wifi_frequency_channel', 'wifi_rssi_dbm', 'wifi_link_speed_quality_index', 'wifi_standard'],
     'diagnostics': ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness'],
     'app_settings': ['general', 'power_management', 'batching_and_upload', 'precision_controls', 'diagnostics_toggles', 'system_status'],
     'power_management': ['power_modes', 'battery_optimization_state'],
@@ -213,6 +213,28 @@ async def get_device_history(
         "data": data_with_deltas
     }
 
+def _restructure_network_data(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if 'network' not in payload:
+        return payload
+    
+    wifi_data = {}
+    
+    if 'wifi_details' in payload and isinstance(payload['wifi_details'], dict):
+        wifi_details = payload.pop('wifi_details')
+        wifi_data['frequency_channel'] = wifi_details.get('wifi_frequency_channel')
+        wifi_data['rssi_dbm'] = wifi_details.get('wifi_rssi_dbm')
+        wifi_data['link_speed_quality_index'] = wifi_details.get('wifi_link_speed_quality_index')
+        wifi_data['standard'] = wifi_details.get('wifi_standard')
+
+    if isinstance(payload['network'], dict):
+        network = payload['network']
+        wifi_data['ssid'] = network.pop('wifi_name_ssid', None)
+        wifi_data['bssid'] = network.pop('wifi_bssid', None)
+        
+        payload['network']['wifi'] = cleanup_empty(wifi_data)
+
+    return payload
+
 @router.get("/latest/{device_id}")
 async def get_latest_device_data(request: Request, device_id: str):
     base_url = build_base_url(request)
@@ -242,6 +264,8 @@ async def get_latest_device_data(request: Request, device_id: str):
             
             if 'app_settings' in freshness_info and isinstance(freshness_info['app_settings'], dict):
                 freshness_info['app_settings'] = rename_app_settings_freshness_keys(freshness_info['app_settings'])
+
+            data_payload = _restructure_network_data(data_payload)
 
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             if 'diagnostics' in freshness_info and 'weather' in freshness_info['diagnostics']:
