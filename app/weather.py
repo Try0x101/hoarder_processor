@@ -15,36 +15,51 @@ async def fetch_openmeteo_data(lat: float, lon: float) -> Optional[Dict[str, Any
     async with httpx.AsyncClient(timeout=5.0) as client:
         weather_params = {
             "latitude": lat, "longitude": lon, "timezone": "UTC", "wind_speed_unit": "ms",
-            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,cloud_cover"
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,pressure_msl,cloud_cover",
+            "daily": "sunrise,sunset"
         }
         marine_params = {
             "latitude": lat, "longitude": lon, "timezone": "UTC",
             "current": "wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period"
         }
+        air_quality_params = {
+            "latitude": lat, "longitude": lon, "timezone": "UTC",
+            "current": "us_aqi,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
+        }
+
         weather_task = client.get("https://api.open-meteo.com/v1/forecast", params=weather_params)
         marine_task = client.get("https://marine-api.open-meteo.com/v1/marine", params=marine_params)
+        air_quality_task = client.get("https://air-quality-api.open-meteo.com/v1/air-quality", params=air_quality_params)
         
-        results = await asyncio.gather(weather_task, marine_task, return_exceptions=True)
+        results = await asyncio.gather(weather_task, marine_task, air_quality_task, return_exceptions=True)
         
         final_data = {}
         if not isinstance(results[0], Exception) and results[0].status_code == 200:
-            current = results[0].json().get("current", {})
+            res_json = results[0].json()
+            current = res_json.get("current", {})
+            daily = res_json.get("daily", {})
             final_data.update({
                 "temperature": current.get("temperature_2m"), "humidity": current.get("relative_humidity_2m"),
                 "apparent_temp": current.get("apparent_temperature"), "precipitation": current.get("precipitation"),
                 "code": current.get("weather_code"), "wind_speed": current.get("wind_speed_10m"),
                 "wind_direction": current.get("wind_direction_10m"), "wind_gusts": current.get("wind_gusts_10m"),
-                "pressure_msl": current.get("pressure_msl"), "cloud_cover": current.get("cloud_cover")
+                "pressure_msl": current.get("pressure_msl"), "cloud_cover": current.get("cloud_cover"),
+                "elevation": res_json.get("elevation"),
+                "sunrise": daily.get("sunrise", [None])[0], "sunset": daily.get("sunset", [None])[0]
             })
         if not isinstance(results[1], Exception) and results[1].status_code == 200:
             current = results[1].json().get("current", {})
             final_data.update({
-                "marine_wave_height": current.get("wave_height"),
-                "marine_wave_direction": current.get("wave_direction"),
-                "marine_wave_period": current.get("wave_period"),
-                "marine_swell_wave_height": current.get("swell_wave_height"),
-                "marine_swell_wave_direction": current.get("swell_wave_direction"),
-                "marine_swell_wave_period": current.get("swell_wave_period")
+                "marine_wave_height": current.get("wave_height"), "marine_wave_direction": current.get("wave_direction"),
+                "marine_wave_period": current.get("wave_period"), "marine_swell_wave_height": current.get("swell_wave_height"),
+                "marine_swell_wave_direction": current.get("swell_wave_direction"), "marine_swell_wave_period": current.get("swell_wave_period")
+            })
+        if not isinstance(results[2], Exception) and results[2].status_code == 200:
+            current = results[2].json().get("current", {})
+            final_data.update({
+                "us_aqi": current.get("us_aqi"), "pm2_5": current.get("pm2_5"),
+                "carbon_monoxide": current.get("carbon_monoxide"), "nitrogen_dioxide": current.get("nitrogen_dioxide"),
+                "sulphur_dioxide": current.get("sulphur_dioxide"), "ozone": current.get("ozone")
             })
         return final_data if final_data else None
 

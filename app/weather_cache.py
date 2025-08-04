@@ -16,8 +16,11 @@ _cleanup_lock = asyncio.Lock()
 
 WEATHER_KEYS = {
     'temperature', 'humidity', 'apparent_temp', 'precipitation', 'code',
-    'wind_speed', 'wind_direction', 'marine_wave_height',
-    'marine_wave_direction', 'marine_wave_period'
+    'wind_speed', 'wind_direction', 'wind_gusts', 'pressure_msl', 'cloud_cover',
+    'marine_wave_height', 'marine_wave_direction', 'marine_wave_period',
+    'marine_swell_wave_height', 'marine_swell_wave_direction', 'marine_swell_wave_period',
+    'elevation', 'sunrise', 'sunset',
+    'us_aqi', 'pm2_5', 'carbon_monoxide', 'nitrogen_dioxide', 'sulphur_dioxide', 'ozone'
 }
 
 def safe_ensure_cache_dir():

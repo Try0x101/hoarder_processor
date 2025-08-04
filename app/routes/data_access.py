@@ -22,7 +22,7 @@ router = APIRouter(
 KEY_ORDERS = {
     'data': ['identity', 'location', 'power', 'device_state', 'sensors', 'network', 'environment', 'app_settings', 'diagnostics'],
     'identity': ['device_name', 'device_id'],
-    'location': ['latitude', 'longitude', 'altitude_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'geohash_precision_in_meters', 'location_actual_timezone'],
+    'location': ['latitude', 'longitude', 'altitude_in_meters', 'elevation_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'geohash_precision_in_meters', 'location_actual_timezone'],
     'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
     'device_state': ['screen_on', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
     'sensors': ['device_temperature_celsius', 'device_ambient_light_level', 'device_barometer_hpa', 'device_steps_since_boot', 'device_proximity_sensor_closer_than_5cm'],
@@ -30,10 +30,12 @@ KEY_ORDERS = {
     'wifi': ['ssid', 'bssid', 'frequency_channel', 'rssi_dbm', 'link_speed_quality_index', 'standard'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
     'cellular': ['type', 'operator', 'signal_strength_in_dbm', 'signal_quality', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],
-    'environment': ['weather', 'precipitation', 'wind', 'marine'],
+    'environment': ['weather', 'precipitation', 'wind', 'marine', 'solar', 'air_quality'],
     'weather': ['temperature_in_celsius', 'feels_like_in_celsius', 'wind_chill_in_celsius', 'description', 'assessment', 'humidity_percent', 'pressure_in_hpa', 'cloud_cover_percent'],
     'precipitation': ['type', 'intensity', 'summary'],
     'wind': ['speed_in_meters_per_second', 'gusts_in_meters_per_second', 'direction', 'description'],
+    'solar': ['sunrise', 'sunset'],
+    'air_quality': ['us_aqi', 'assessment', 'pm2_5', 'carbon_monoxide', 'nitrogen_dioxide', 'sulphur_dioxide', 'ozone'],
     'diagnostics': ['timestamps', 'weather', 'ingest_request_id', 'ingest_request_info', 'ingest_warnings', 'data_freshness'],
     'app_settings': ['general', 'power_management', 'batching_and_upload', 'precision_controls', 'diagnostics_toggles', 'system_status'],
     'power_management': ['power_modes', 'battery_optimization_state'],
@@ -165,6 +167,10 @@ async def get_device_history(
             previous_payload = processed_payloads[i + 1] if (i + 1) < len(processed_payloads) else None
             
             changes = diff_states(current_payload, previous_payload) if previous_payload else current_payload
+
+            if get_nested(changes, ['environment', 'solar']):
+                changes['environment']['solar'].pop('sunrise_utc', None)
+                changes['environment']['solar'].pop('sunset_utc', None)
 
             original_payload = orjson.loads(history_rows[i]['enriched_payload'])
             current_diagnostics = original_payload.get("diagnostics", {})
@@ -310,6 +316,10 @@ async def get_latest_device_data(request: Request, device_id: str):
             
             sorted_data['diagnostics'] = sorted_diagnostics
             
+            if get_nested(sorted_data, ['environment', 'solar']):
+                sorted_data['environment']['solar'].pop('sunrise_utc', None)
+                sorted_data['environment']['solar'].pop('sunset_utc', None)
+
             return {
                 "request": {"self_url": f"{base_url}/data/latest/{device_id}"},
                 "navigation": {

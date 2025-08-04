@@ -74,6 +74,44 @@ def get_timezone_offset_str(lat: Optional[float], lon: Optional[float]) -> Optio
     except Exception:
         return None
 
+def format_timestamp_with_local_tz(utc_ts_str: Optional[str], lat: Optional[float], lon: Optional[float]) -> Optional[str]:
+    if not all([utc_ts_str, lat is not None, lon is not None]):
+        return None
+    
+    try:
+        utc_dt = datetime.datetime.fromisoformat(utc_ts_str.replace("Z", "+00:00"))
+        if utc_dt.tzinfo is None:
+            utc_dt = utc_dt.replace(tzinfo=datetime.timezone.utc)
+        
+        local_tz = None
+        tz_name = tf.timezone_at(lng=lon, lat=lat)
+
+        if tz_name:
+            try:
+                local_tz = pytz.timezone(tz_name)
+            except pytz.UnknownTimeZoneError:
+                local_tz = None
+        
+        if not local_tz:
+            offset_hours = round(lon / 15)
+            local_tz = datetime.timezone(datetime.timedelta(hours=offset_hours))
+
+        local_dt = utc_dt.astimezone(local_tz)
+        
+        offset = local_dt.utcoffset()
+        if offset is not None:
+            secs = offset.total_seconds()
+            sign = "+" if secs >= 0 else "-"
+            h, rem = divmod(abs(secs), 3600)
+            m, _ = divmod(rem, 60)
+            offset_str = f"UTC{sign}{int(h)}" if m == 0 else f"UTC{sign}{int(h)}:{int(m):02d}"
+        else:
+            offset_str = "UTC"
+            
+        return local_dt.strftime(f'%d.%m.%Y %H:%M:%S {offset_str}')
+    except (ValueError, TypeError):
+        return utc_ts_str
+
 def get_temperature_assessment(temp: Optional[float]) -> Optional[str]:
     if temp is None: return None
     if temp < 0: return "Freezing"
@@ -82,6 +120,15 @@ def get_temperature_assessment(temp: Optional[float]) -> Optional[str]:
     if temp < 25: return "Mild"
     if temp < 30: return "Warm"
     return "Hot"
+
+def get_aqi_assessment(aqi: Optional[int]) -> Optional[str]:
+    if aqi is None: return None
+    if aqi <= 50: return "Good"
+    if aqi <= 100: return "Moderate"
+    if aqi <= 150: return "Unhealthy for Sensitive Groups"
+    if aqi <= 200: return "Unhealthy"
+    if aqi <= 300: return "Very Unhealthy"
+    return "Hazardous"
 
 def get_wind_description(speed_ms: Optional[float]) -> Optional[str]:
     if speed_ms is None: return None
@@ -228,20 +275,7 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
 
     weather_ts_local_str = None
     if weather_ts_iso and fetch_lat is not None and fetch_lon is not None:
-        try:
-            tz_name = tf.timezone_at(lng=fetch_lon, lat=fetch_lat)
-            if tz_name:
-                utc_dt = datetime.datetime.fromisoformat(weather_ts_iso.replace("Z", "+00:00"))
-                local_tz = pytz.timezone(tz_name)
-                local_dt = utc_dt.astimezone(local_tz)
-                offset = local_dt.utcoffset()
-                if offset is not None:
-                    secs, sign = offset.total_seconds(), "+" if offset.total_seconds() >= 0 else "-"
-                    h, rem = divmod(abs(secs), 3600)
-                    m, _ = divmod(rem, 60)
-                    offset_str = f"UTC{sign}{int(h)}" if m == 0 else f"UTC{sign}{int(h)}:{int(m):02d}"
-                    weather_ts_local_str = local_dt.strftime(f'%d.%m.%Y %H:%M:%S {offset_str}')
-        except Exception: pass
+        weather_ts_local_str = format_timestamp_with_local_tz(weather_ts_iso, fetch_lat, fetch_lon)
 
     weather_diag = {
         "weather_fetch_location": f"{fetch_lat:.6f}, {fetch_lon:.6f}" if fetch_lat is not None and fetch_lon is not None else None,
@@ -263,6 +297,14 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
 
     swell_dir_val = _get_val_or_base(data, 'marine_swell_wave_direction', base_state, ['environment', 'marine', 'swell', 'direction'], None)
     swell_dir_str = get_wind_direction_compass(safe_float(swell_dir_val)) if isinstance(swell_dir_val, (int, float)) else swell_dir_val
+
+    us_aqi_val = _get_val_or_base(data, 'us_aqi', base_state, ['environment', 'air_quality', 'us_aqi'], None, None, safe_int)
+
+    sunrise_utc_str = _get_val_or_base(data, 'sunrise', base_state, ['environment', 'solar', 'sunrise_utc'], None)
+    sunset_utc_str = _get_val_or_base(data, 'sunset', base_state, ['environment', 'solar', 'sunset_utc'], None)
+    
+    formatted_sunrise = format_timestamp_with_local_tz(sunrise_utc_str, lat, lon)
+    formatted_sunset = format_timestamp_with_local_tz(sunset_utc_str, lat, lon)
 
     transformed = {
         "identity": {
@@ -299,6 +341,7 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         "location": {
             "latitude": lat, "longitude": lon, "geohash_precision_in_meters": precision_meters,
             "altitude_in_meters": _get_val_or_base(data, 'a', base_state, ['location', 'altitude_in_meters'], None, -1, safe_int), 
+            "elevation_in_meters": _get_val_or_base(data, 'elevation', base_state, ['location', 'elevation_in_meters'], None, None, safe_int),
             "accuracy_in_meters": _get_val_or_base(data, 'ac', base_state, ['location', 'accuracy_in_meters'], None, -1, safe_int),
             "speed_in_kmh": _get_val_or_base(data, 's', base_state, ['location', 'speed_in_kmh'], None, -1, safe_int),
             "location_actual_timezone": location_tz_str
@@ -338,6 +381,21 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
                     "period_in_seconds": _get_val_or_base(data, 'marine_swell_wave_period', base_state, ['environment', 'marine', 'swell', 'period_in_seconds'], None, None, lambda v: safe_float(v, 1)),
                     "direction": swell_dir_str
                 }
+            },
+            "solar": {
+                "sunrise": formatted_sunrise,
+                "sunset": formatted_sunset,
+                "sunrise_utc": sunrise_utc_str,
+                "sunset_utc": sunset_utc_str
+            },
+            "air_quality": {
+                "us_aqi": us_aqi_val,
+                "assessment": get_aqi_assessment(us_aqi_val),
+                "pm2_5": _get_val_or_base(data, 'pm2_5', base_state, ['environment', 'air_quality', 'pm2_5'], None, None, lambda v: safe_float(v, 2)),
+                "carbon_monoxide": _get_val_or_base(data, 'carbon_monoxide', base_state, ['environment', 'air_quality', 'carbon_monoxide'], None, None, lambda v: safe_float(v, 2)),
+                "nitrogen_dioxide": _get_val_or_base(data, 'nitrogen_dioxide', base_state, ['environment', 'air_quality', 'nitrogen_dioxide'], None, None, lambda v: safe_float(v, 2)),
+                "sulphur_dioxide": _get_val_or_base(data, 'sulphur_dioxide', base_state, ['environment', 'air_quality', 'sulphur_dioxide'], None, None, lambda v: safe_float(v, 2)),
+                "ozone": _get_val_or_base(data, 'ozone', base_state, ['environment', 'air_quality', 'ozone'], None, None, lambda v: safe_float(v, 2))
             }
         },
         "device_state": {
