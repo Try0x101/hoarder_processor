@@ -292,7 +292,7 @@ async def root(request: Request):
 
         system_health = {
             "uptime": {
-                "time_since_restart_utc": int(APP_START_TIME),
+                "time_since_restart_timestamp_utc": int(APP_START_TIME),
                 "time_since_restart": format_last_seen_ago(uptime_seconds),
                 "uptime_percentage": uptime_percentage
             },

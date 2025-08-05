@@ -27,7 +27,7 @@ KEY_ORDERS = {
     'device_state': ['screen_on', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
     'sensors': ['device_temperature_celsius', 'device_ambient_light_level', 'device_ambient_light_lux_range', 'device_barometer_hpa', 'device_steps_since_boot', 'device_proximity_sensor_closer_than_5cm'],
     'network': ['currently_used_active_network', 'source_ip', 'cellular_analysis', 'wifi', 'bandwidth', 'cellular'],
-    'cellular_analysis': ['connection_state', 'health_score', 'predicted_upload_mbps', 'quality_ema_db', 'quality_volatility_db', 'strength_rate_of_change_db', 'timing_advance_rate_of_change'],
+    'cellular_analysis': ['predicted_upload_throughput_mbps', 'connection_state', 'prediction_source', 'link_speed_mbps', 'effective_link_speed_mbps', 'quality_derating_factor', 'strength_derating_factor', 'volatility_index'],
     'wifi': ['ssid', 'bssid', 'frequency_channel', 'frequency_band', 'rssi_dbm', 'link_speed_quality_index', 'link_speed_mbps_range', 'standard'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
     'cellular': ['type', 'operator', 'signal', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],

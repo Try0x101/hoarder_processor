@@ -90,7 +90,7 @@ DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
 DEVICE_BATCH_TS_KEY_PREFIX = "device:batch_ts"
 DEVICE_BATCH_TS_TTL_SECONDS = 6 * 3600
 CELLULAR_ANALYSIS_KEY_PREFIX = "cellular:analysis"
-CELLULAR_ANALYSIS_TTL_SECONDS = 6 * 3600
+CELLULAR_ANALYSIS_TTL_SECONDS = 30 * 24 * 3600
 
 async def ensure_db_initialized(conn: aiosqlite.Connection):
     await conn.executescript(DB_SCHEMA)
