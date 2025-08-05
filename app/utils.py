@@ -14,6 +14,17 @@ GEOHASH_LEN_TO_METERS = {
     9: 5, 10: 1, 11: 1, 12: 1
 }
 
+OUI_VENDOR_MAP: Dict[str, str] = {}
+
+def get_vendor_from_mac(mac_address: str) -> Optional[str]:
+    if not mac_address or not isinstance(mac_address, str):
+        return None
+    try:
+        oui = mac_address.replace(":", "").replace("-", "").upper()[:6]
+        return OUI_VENDOR_MAP.get(oui)
+    except Exception:
+        return None
+
 def get_nested(d: dict, keys: list, default: Any = None) -> Any:
     for key in keys:
         if isinstance(d, dict):
@@ -284,6 +295,7 @@ class SimpleCircuitBreaker:
 
 weather_breaker = SimpleCircuitBreaker("OpenMeteo", failure_threshold=3, timeout=30)
 wttr_breaker = SimpleCircuitBreaker("WTTR", failure_threshold=2, timeout=20)
+ip_api_breaker = SimpleCircuitBreaker("IP-API", failure_threshold=5, timeout=60)
 
 APP_SETTINGS_KEY_MAP = {
     "av": "app_version_code", "dc": "data_collection_toggle", "su": "server_upload_toggle",

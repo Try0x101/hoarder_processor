@@ -1,10 +1,27 @@
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import worker_process_init
+import sqlite3
 from app.geojson_processor import settings as geojson_settings
 from app.database import (
     REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
-    CELERY_DB_BROKER, CELERY_DB_BACKEND
+    CELERY_DB_BROKER, CELERY_DB_BACKEND, DB_PATH
 )
+from app.utils import OUI_VENDOR_MAP
+
+@worker_process_init.connect
+def on_worker_init(**kwargs):
+    try:
+        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        cur = con.cursor()
+        cur.execute("SELECT oui, vendor FROM oui_vendors")
+        rows = cur.fetchall()
+        OUI_VENDOR_MAP.update({row[0]: row[1] for row in rows})
+        con.close()
+    except Exception:
+        # In production, this error would be caught by monitoring.
+        # For now, we allow it to fail silently if the DB is not ready.
+        pass
 
 celery_app = Celery(
     'hoarder_processor',

@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS latest_enriched_state (
     enriched_payload TEXT NOT NULL,
     last_updated_ts TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS oui_vendors (
+    oui TEXT PRIMARY KEY,
+    vendor TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_enriched_device_event_time ON enriched_telemetry (device_id, calculated_event_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_enriched_event_time ON enriched_telemetry (calculated_event_timestamp DESC);
 """
@@ -35,6 +39,7 @@ CELERY_DB_BROKER = 2
 CELERY_DB_BACKEND = 3
 REDIS_DB_POSITION = 4
 REDIS_DB_METRICS = 5
+REDIS_DB_IP_INTEL = 6
 
 DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
@@ -50,6 +55,12 @@ def _get_redis_position_key(device_id: str) -> str:
 
 def _get_redis_batch_ts_key(device_id: str) -> str:
     return f"{DEVICE_BATCH_TS_KEY_PREFIX}:{device_id}"
+
+async def get_all_oui_vendors(conn: aiosqlite.Connection) -> Dict[str, str]:
+    conn.row_factory = aiosqlite.Row
+    cursor = await conn.execute("SELECT oui, vendor FROM oui_vendors")
+    rows = await cursor.fetchall()
+    return {row["oui"]: row["vendor"] for row in rows}
 
 async def get_device_batch_ts(redis_client: redis.Redis, device_id: str) -> Optional[int]:
     redis_key = _get_redis_batch_ts_key(device_id)

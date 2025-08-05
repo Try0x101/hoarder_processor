@@ -13,13 +13,14 @@ from celery_app import celery_app
 from app.database import (
     get_latest_state_for_device, save_stateful_data, DB_PATH,
     REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
-    REDIS_DB_POSITION, REDIS_DB_METRICS,
+    REDIS_DB_POSITION, REDIS_DB_METRICS, REDIS_DB_IP_INTEL,
     get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts,
     ensure_db_initialized
 )
 from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload
+from app.ip_intelligence import get_ip_intelligence
 
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
@@ -47,17 +48,20 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         if device_id:
             records_by_device.setdefault(device_id, []).append(r)
 
-    redis_client = None
+    position_redis_client = None
+    ip_intel_redis_client = None
     sentinel = redis.Sentinel(REDIS_SENTINEL_HOSTS, socket_timeout=0.5, decode_responses=True)
     
     try:
-        redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
+        position_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
+        ip_intel_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_IP_INTEL)
+        
         async with aiosqlite.connect(DB_PATH) as db:
             await ensure_db_initialized(db)
             for device_id, device_records in records_by_device.items():
                 sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
                 
-                base_ts = await get_device_batch_ts(redis_client, device_id)
+                base_ts = await get_device_batch_ts(position_redis_client, device_id)
                 current_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
 
                 for record in sorted_records:
@@ -66,7 +70,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     
                     if 'ts' in payload and payload['ts'] is not None:
                         base_ts = int(payload['ts'])
-                        await save_device_batch_ts(redis_client, device_id, base_ts)
+                        await save_device_batch_ts(position_redis_client, device_id, base_ts)
                         event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts, tz=datetime.timezone.utc)
                     elif 'to' in payload and base_ts is not None and payload['to'] is not None:
                         event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts + int(payload['to']), tz=datetime.timezone.utc)
@@ -74,7 +78,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                         try:
                             event_timestamp_dt = datetime.datetime.fromisoformat(record['received_at'].replace(" ", "T").replace("Z", "+00:00"))
                             base_ts = None
-                            await delete_device_batch_ts(redis_client, device_id)
+                            await delete_device_batch_ts(position_redis_client, device_id)
                         except (ValueError, TypeError):
                             continue
                     else:
@@ -90,9 +94,10 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
 
                     simple_base_state = reconstruct_from_freshness(current_freshness_payload) if current_freshness_payload else {}
                     
-                    flat_data = await get_weather_enrichment(redis_client, device_id, flat_data)
+                    ip_intel_data = await get_ip_intelligence(ip_intel_redis_client, flat_data.get("client_ip"))
+                    flat_data = await get_weather_enrichment(position_redis_client, device_id, flat_data)
 
-                    new_full_simple_state = transform_payload(flat_data, simple_base_state)
+                    new_full_simple_state = transform_payload(flat_data, simple_base_state, ip_intel_data)
                     
                     new_freshness_payload = update_freshness_from_full_state(
                         current_freshness_payload or {},
@@ -135,8 +140,10 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         print(f"Error in stateful processing task: {e}")
         raise
     finally:
-        if redis_client:
-            await redis_client.close()
+        if position_redis_client:
+            await position_redis_client.close()
+        if ip_intel_redis_client:
+            await ip_intel_redis_client.close()
 
 @celery_app.task(name="processor.process_and_store_data")
 def process_and_store_data(records: List[Dict[str, Any]]):

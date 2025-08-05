@@ -8,7 +8,8 @@ from app.utils import (
     decode_geohash, 
     decode_base62, 
     decode_bssid_base64,
-    get_nested
+    get_nested,
+    get_vendor_from_mac
 )
 
 tf = TimezoneFinder()
@@ -218,7 +219,7 @@ def _get_val_or_base(data: Dict[str, Any], key: str, base_state: Dict[str, Any],
     
     return get_nested(base_state, path, default)
 
-def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[str, Any]:
+def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any], ip_intel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     lat, lon, precision_meters = None, None, None
     if 'g' in data and data['g'] != "":
         decoded = decode_geohash(data['g'])
@@ -237,6 +238,7 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
 
     cellular_type_str = _get_val_or_base(data, 't', base_state, ['network', 'cellular', 'type'], None, -1, lambda v: CELLULAR_TYPE_MAP.get(v))
     formatted_bssid = _get_val_or_base(data, 'b', base_state, ['network', 'wifi', 'bssid'], None, "", decode_bssid_base64)
+    wifi_vendor = get_vendor_from_mac(formatted_bssid) if formatted_bssid else None
     currently_used_active_network = "Wi-Fi" if formatted_bssid else cellular_type_str
     
     battery_percent_val = _get_val_or_base(data, 'p', base_state, ['power', 'battery_percent'], None)
@@ -306,6 +308,29 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
     formatted_sunrise = format_timestamp_with_local_tz(sunrise_utc_str, lat, lon)
     formatted_sunset = format_timestamp_with_local_tz(sunset_utc_str, lat, lon)
 
+    ip_intelligence_data = None
+    if ip_intel and ip_intel.get("status") == "success":
+        ip_intelligence_data = {
+            "geolocation": {
+                "country": ip_intel.get("country"),
+                "region": ip_intel.get("regionName"),
+                "city": ip_intel.get("city"),
+                "zip_code": ip_intel.get("zip"),
+                "latitude": ip_intel.get("lat"),
+                "longitude": ip_intel.get("lon"),
+                "timezone": ip_intel.get("timezone"),
+            },
+            "network_provider": {
+                "isp": ip_intel.get("isp"),
+                "organization": ip_intel.get("org"),
+                "asn": ip_intel.get("as"),
+            },
+            "security": {
+                "is_proxy_or_vpn": ip_intel.get("proxy"),
+                "is_hosting_provider": ip_intel.get("hosting"),
+            }
+        }
+
     transformed = {
         "identity": {
             "device_id": data.get("device_id"), 
@@ -314,8 +339,10 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any]) -> Dict[
         "network": {
             "currently_used_active_network": currently_used_active_network,
             "source_ip": _get_val_or_base(data, 'client_ip', base_state, ['network', 'source_ip'], None),
+            "ip_intelligence": ip_intelligence_data,
             "wifi": {
                 "bssid": formatted_bssid,
+                "vendor": wifi_vendor,
                 "ssid": _get_val_or_base(data, 'wn', base_state, ['network', 'wifi', 'ssid'], None, ""),
                 "frequency_channel": _get_val_or_base(data, 'wf', base_state, ['network', 'wifi', 'frequency_channel'], None, 0),
                 "rssi_dbm": _get_val_or_base(data, 'wr', base_state, ['network', 'wifi', 'rssi_dbm'], None, 0, lambda v: -safe_int(v)),
