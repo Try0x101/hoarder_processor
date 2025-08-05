@@ -58,25 +58,13 @@ def safe_float(v, precision=None):
         return None
 
 def _get_signal_quality_info(network_type: Optional[str], raw_value: Optional[int]) -> Dict[str, Any]:
-    if raw_value is None or raw_value == 0:
+    if raw_value is None:
         return {"value": None, "unit": None}
 
-    value, unit = raw_value, None
-
-    if network_type == "LTE":
-        value = -raw_value
-        unit = "dB"
-    elif network_type == "NR(5G)":
-        value = raw_value
-        unit = "dB"
-    elif network_type == "UMTS/HSPA":
-        value = -raw_value
-        unit = "dB"
-    elif network_type == "CDMA":
-        value = -raw_value
-        unit = "dB"
-    elif network_type in ["GSM", "GPRS/EDGE"]:
-        value = raw_value
+    value, unit = raw_value, "dB"
+    
+    # For older standards, the value is an index, not dB
+    if network_type in ["GSM", "GPRS/EDGE"]:
         unit = "index (0-7)"
     
     return {"value": value, "unit": unit}

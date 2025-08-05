@@ -15,12 +15,13 @@ from app.database import (
     REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
     REDIS_DB_POSITION, REDIS_DB_METRICS, REDIS_DB_IP_INTEL,
     get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts,
-    ensure_db_initialized
+    ensure_db_initialized, get_cellular_analysis_state, save_cellular_analysis_state
 )
 from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload
 from app.ip_intelligence import get_ip_intelligence
+from app.cellular_analysis import analyze_cellular_state
 
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
@@ -63,6 +64,7 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                 
                 base_ts = await get_device_batch_ts(position_redis_client, device_id)
                 current_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
+                cellular_analysis_state = await get_cellular_analysis_state(position_redis_client, device_id)
 
                 for record in sorted_records:
                     payload = record.get("payload", {})
@@ -98,6 +100,10 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
                     flat_data = await get_weather_enrichment(position_redis_client, device_id, flat_data)
 
                     new_full_simple_state = transform_payload(flat_data, simple_base_state, ip_intel_data)
+                    
+                    analysis_payload, cellular_analysis_state = analyze_cellular_state(new_full_simple_state, cellular_analysis_state)
+                    new_full_simple_state['network']['cellular_analysis'] = analysis_payload
+                    await save_cellular_analysis_state(position_redis_client, device_id, cellular_analysis_state)
                     
                     new_freshness_payload = update_freshness_from_full_state(
                         current_freshness_payload or {},
@@ -174,10 +180,6 @@ async def _async_cleanup_db():
             await db.commit()
     except Exception as e:
         print(f"Error during DB cleanup: {e}")
-
-@celery_app.task(name="processor.cleanup_db")
-def cleanup_db():
-    asyncio.run(_async_cleanup_db())
 
 def _get_app_processes():
     pids = []

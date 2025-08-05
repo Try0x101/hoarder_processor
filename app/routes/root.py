@@ -279,8 +279,8 @@ async def root(request: Request):
         CELERY_BEAT_LOG_FILE = os.path.join(LOG_DIR, "celery_beat.log")
         
         uptime_seconds = time.time() - APP_START_TIME
-        celery_worker_status = check_process_log_status(CELERY_LOG_FILE, 300)
-        celery_beat_status = check_process_log_status(CELERY_BEAT_LOG_FILE, 900)
+        celery_worker_status = check_process_log_status(CELERY_LOG_FILE, 180)
+        celery_beat_status = check_process_log_status(CELERY_BEAT_LOG_FILE, 90)
         
         health_checks = [
             celery_worker_status == 'active',

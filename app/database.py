@@ -89,6 +89,8 @@ DEVICE_POSITION_KEY_PREFIX = "device:position"
 DEVICE_POSITION_TTL_SECONDS = 30 * 24 * 3600
 DEVICE_BATCH_TS_KEY_PREFIX = "device:batch_ts"
 DEVICE_BATCH_TS_TTL_SECONDS = 6 * 3600
+CELLULAR_ANALYSIS_KEY_PREFIX = "cellular:analysis"
+CELLULAR_ANALYSIS_TTL_SECONDS = 6 * 3600
 
 async def ensure_db_initialized(conn: aiosqlite.Connection):
     await conn.executescript(DB_SCHEMA)
@@ -99,6 +101,9 @@ def _get_redis_position_key(device_id: str) -> str:
 
 def _get_redis_batch_ts_key(device_id: str) -> str:
     return f"{DEVICE_BATCH_TS_KEY_PREFIX}:{device_id}"
+
+def _get_redis_cellular_analysis_key(device_id: str) -> str:
+    return f"{CELLULAR_ANALYSIS_KEY_PREFIX}:{device_id}"
 
 async def get_all_oui_vendors(conn: aiosqlite.Connection) -> Dict[str, str]:
     conn.row_factory = aiosqlite.Row
@@ -125,6 +130,21 @@ async def delete_device_batch_ts(redis_client: redis.Redis, device_id: str):
     redis_key = _get_redis_batch_ts_key(device_id)
     try:
         await redis_client.delete(redis_key)
+    except redis.RedisError:
+        pass
+
+async def get_cellular_analysis_state(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
+    redis_key = _get_redis_cellular_analysis_key(device_id)
+    try:
+        state_data = await redis_client.get(redis_key)
+        return orjson.loads(state_data) if state_data else None
+    except (redis.RedisError, orjson.JSONDecodeError):
+        return None
+
+async def save_cellular_analysis_state(redis_client: redis.Redis, device_id: str, state: Dict[str, Any]):
+    redis_key = _get_redis_cellular_analysis_key(device_id)
+    try:
+        await redis_client.set(redis_key, orjson.dumps(state), ex=CELLULAR_ANALYSIS_TTL_SECONDS)
     except redis.RedisError:
         pass
 

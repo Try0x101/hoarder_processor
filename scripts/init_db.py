@@ -7,12 +7,16 @@ import urllib.request
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from app.database import DB_PATH
 
-OUI_URL = "http://standards-oui.ieee.org/oui.txt"
+OUI_URL = "https://standards-oui.ieee.org/oui/oui.txt"
 
 def update_oui_database(cur: sqlite3.Cursor):
     print("Updating OUI vendor database...")
     try:
-        with urllib.request.urlopen(OUI_URL, timeout=20) as response:
+        req = urllib.request.Request(
+            OUI_URL,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
             if response.status != 200:
                 print(f"WARNING: Failed to download OUI file. Status: {response.status}")
                 return

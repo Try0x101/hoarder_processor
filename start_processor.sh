@@ -64,6 +64,7 @@ export GOOGLE_CLIENT_ID="9386374739-9tcsvhkan37q3hqq22dvh5e5op7d752g.apps.google
 export GOOGLE_CLIENT_SECRET="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"
 export SESSION_SECRET_KEY="659c4efed7e605c944c3166acbb6978b35a9eb6a67845a40ac2ab7e73fd2f8ae"
 export ALLOWED_USER_EMAIL="try0x101@gmail.com"
+export PYTHONUNBUFFERED=1
 
 PYTHONPATH=. celery -A celery_app worker --loglevel=INFO -n processor_worker@%h --without-mingle > "$CELERY_LOG_FILE" 2>&1 &
 CELERY_PID=$!
