@@ -5,7 +5,7 @@ from starlette.middleware.sessions import SessionMiddleware
 import os
 import asyncio
 import aiosqlite
-from app.database import DB_PATH, get_all_oui_vendors
+from app.database import DB_PATH, get_all_oui_vendors, initialize_database_if_needed
 from app.utils import OUI_VENDOR_MAP
 
 app = FastAPI(
@@ -18,12 +18,13 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event():
     try:
+        await asyncio.to_thread(initialize_database_if_needed)
         async with aiosqlite.connect(f"file:{DB_PATH}?mode=ro", uri=True) as db:
             OUI_VENDOR_MAP.update(await get_all_oui_vendors(db))
             if OUI_VENDOR_MAP:
                 print(f"Successfully loaded {len(OUI_VENDOR_MAP)} OUI vendors into memory.")
             else:
-                print("WARNING: OUI vendor map is empty. MAC address lookups will not work.")
+                print("CRITICAL: OUI vendor map is empty after startup. MAC address lookups will be slow or fail.")
     except Exception as e:
         print(f"CRITICAL: Failed to load OUI vendors from database on startup: {e}")
 

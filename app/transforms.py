@@ -24,11 +24,27 @@ CELLULAR_TYPE_MAP = {
     1: "GSM", 2: "GPRS/EDGE", 3: "UMTS/HSPA", 4: "LTE",
     5: "NR(5G)", 6: "CDMA", 7: "IDEN", 0: "Other"
 }
+SIGNAL_STRENGTH_METRIC_MAP = {
+    "GSM": "RSSI", "GPRS/EDGE": "RSSI", "UMTS/HSPA": "RSCP",
+    "LTE": "RSRP", "NR(5G)": "SS-RSRP", "CDMA": "RSSI", "IDEN": "RSSI", "Other": "Unknown"
+}
+SIGNAL_QUALITY_METRIC_MAP = {
+    "GSM": "BER", "GPRS/EDGE": "BER", "UMTS/HSPA": "Ec/No",
+    "LTE": "RSRQ", "NR(5G)": "SS-SINR", "CDMA": "Ec/Io", "Other": "Unknown"
+}
 CHARGING_STATE_MAP = {0: "Not Charging", 1: "AC", 2: "USB", 3: "Wireless", 4: "Full"}
 DATA_ACTIVITY_MAP = {0: "None", 1: "In", 2: "Out", 3: "In/Out"}
 WIFI_STANDARD_MAP = {1: "Other", 4: "Wi-Fi 4", 5: "Wi-Fi 5", 6: "Wi-Fi 6"}
 SYSTEM_AUDIO_MAP = {0: "Idle", 1: "Media", 2: "In Call"}
 PHONE_ACTIVITY_MAP = {0: "Stable/Upside Down", 1: "Stable", 2: "Moving"}
+AMBIENT_LIGHT_MAP = {
+    0: "< 0.1 lux", 1: "0.1-5 lux", 2: "5-25 lux", 3: "25-100 lux", 4: "100-300 lux",
+    5: "300-750 lux", 6: "750-2k lux", 7: "2k-8k lux", 8: "8k-40k lux", 9: "> 40k lux"
+}
+WIFI_LINK_SPEED_MAP = {
+    0: "< 5 Mbps", 1: "5-25 Mbps", 2: "25-75 Mbps", 3: "75-150 Mbps", 4: "150-300 Mbps",
+    5: "300-600 Mbps", 6: "600-1200 Mbps", 7: "1.2-5 Gbps", 8: "> 5 Gbps", 9: "> 5 Gbps"
+}
 
 def safe_int(v):
     try: return int(float(v))
@@ -40,6 +56,41 @@ def safe_float(v, precision=None):
         return round(val, precision) if precision is not None else val
     except (ValueError, TypeError, AttributeError):
         return None
+
+def _get_signal_quality_info(network_type: Optional[str], raw_value: Optional[int]) -> Dict[str, Any]:
+    if raw_value is None or raw_value == 0:
+        return {"value": None, "unit": None}
+
+    value, unit = raw_value, None
+
+    if network_type == "LTE":
+        value = -raw_value
+        unit = "dB"
+    elif network_type == "NR(5G)":
+        value = raw_value
+        unit = "dB"
+    elif network_type == "UMTS/HSPA":
+        value = -raw_value
+        unit = "dB"
+    elif network_type == "CDMA":
+        value = -raw_value
+        unit = "dB"
+    elif network_type in ["GSM", "GPRS/EDGE"]:
+        value = raw_value
+        unit = "index (0-7)"
+    
+    return {"value": value, "unit": unit}
+
+def _get_wifi_band_from_channel(channel: Optional[int]) -> Optional[str]:
+    if channel is None or channel == 0:
+        return None
+    if channel in range(1, 15):
+        return "2.4 GHz"
+    if channel in range(36, 166):
+        return "5 GHz"
+    if channel in range(169, 234):
+        return "6 GHz"
+    return "Unknown"
 
 def get_wind_direction_compass(degrees: Optional[float]) -> Optional[str]:
     if degrees is None: return None
@@ -331,6 +382,14 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any], ip_intel
             }
         }
 
+    signal_strength_val = _get_val_or_base(data, 'r', base_state, ['network', 'cellular', 'signal', 'strength', 'value_dbm'], None, 0, lambda v: -safe_int(v))
+    signal_quality_raw = _get_val_or_base(data, 'rq', base_state, ['network', 'cellular', 'signal', 'quality', 'value'], None, 0)
+    quality_info = _get_signal_quality_info(cellular_type_str, signal_quality_raw)
+
+    wifi_freq_channel_val = _get_val_or_base(data, 'wf', base_state, ['network', 'wifi', 'frequency_channel'], None, 0)
+    wifi_link_speed_index_val = _get_val_or_base(data, 'ws', base_state, ['network', 'wifi', 'link_speed_quality_index'], None, -1)
+    ambient_light_level_val = _get_val_or_base(data, 'lx', base_state, ['sensors', 'device_ambient_light_level'], None, -1)
+
     transformed = {
         "identity": {
             "device_id": data.get("device_id"), 
@@ -344,16 +403,28 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any], ip_intel
                 "bssid": formatted_bssid,
                 "vendor": wifi_vendor,
                 "ssid": _get_val_or_base(data, 'wn', base_state, ['network', 'wifi', 'ssid'], None, ""),
-                "frequency_channel": _get_val_or_base(data, 'wf', base_state, ['network', 'wifi', 'frequency_channel'], None, 0),
+                "frequency_channel": wifi_freq_channel_val,
+                "frequency_band": _get_wifi_band_from_channel(wifi_freq_channel_val),
                 "rssi_dbm": _get_val_or_base(data, 'wr', base_state, ['network', 'wifi', 'rssi_dbm'], None, 0, lambda v: -safe_int(v)),
-                "link_speed_quality_index": _get_val_or_base(data, 'ws', base_state, ['network', 'wifi', 'link_speed_quality_index'], None, -1),
+                "link_speed_quality_index": wifi_link_speed_index_val,
+                "link_speed_mbps_range": WIFI_LINK_SPEED_MAP.get(wifi_link_speed_index_val),
                 "standard": _get_val_or_base(data, 'wt', base_state, ['network', 'wifi', 'standard'], None, -1, lambda v: WIFI_STANDARD_MAP.get(v))
             },
             "cellular": {
                 "type": cellular_type_str, 
                 "operator": _get_val_or_base(data, 'o', base_state, ['network', 'cellular', 'operator'], None, ""),
-                "signal_strength_in_dbm": _get_val_or_base(data, 'r', base_state, ['network', 'cellular', 'signal_strength_in_dbm'], None, 0, lambda v: -safe_int(v)),
-                "signal_quality": _get_val_or_base(data, 'rq', base_state, ['network', 'cellular', 'signal_quality'], None, 0), 
+                "signal": {
+                    "strength": {
+                        "metric": SIGNAL_STRENGTH_METRIC_MAP.get(cellular_type_str, "Unknown"),
+                        "value_dbm": signal_strength_val,
+                        "unit": "dBm" if signal_strength_val is not None else None
+                    },
+                    "quality": {
+                        "metric": SIGNAL_QUALITY_METRIC_MAP.get(cellular_type_str, "Unknown"),
+                        "value": quality_info["value"],
+                        "unit": quality_info["unit"]
+                    }
+                },
                 "mcc": _get_val_or_base(data, 'mc', base_state, ['network', 'cellular', 'mcc'], None, -1), 
                 "mnc": _get_val_or_base(data, 'mn', base_state, ['network', 'cellular', 'mnc'], None, ""),
                 "cell_id": _get_val_or_base(data, 'ci', base_state, ['network', 'cellular', 'cell_id'], None, "", decode_base62),
@@ -437,7 +508,8 @@ def transform_payload(data: Dict[str, Any], base_state: Dict[str, Any], ip_intel
         },
         "sensors": {
             "device_temperature_celsius": _get_val_or_base(data, 'dt', base_state, ['sensors', 'device_temperature_celsius'], None), 
-            "device_ambient_light_level": _get_val_or_base(data, 'lx', base_state, ['sensors', 'device_ambient_light_level'], None, -1),
+            "device_ambient_light_level": ambient_light_level_val,
+            "device_ambient_light_lux_range": AMBIENT_LIGHT_MAP.get(ambient_light_level_val),
             "device_barometer_hpa": _get_val_or_base(data, 'pr', base_state, ['sensors', 'device_barometer_hpa'], None, 0), 
             "device_steps_since_boot": _get_val_or_base(data, 'st', base_state, ['sensors', 'device_steps_since_boot'], None, -1),
             "device_proximity_sensor_closer_than_5cm": _get_val_or_base(data, 'px', base_state, ['sensors', 'device_proximity_sensor_closer_than_5cm'], False, -1, lambda v: v == 0),

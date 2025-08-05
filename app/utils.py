@@ -2,11 +2,13 @@ import copy
 import math
 import datetime
 import time
+import sqlite3
 from enum import Enum
 from typing import Dict, Any, Tuple, Optional
 import redis.asyncio as redis
 import geohash as pygeohash
 import base64
+from app.database import DB_PATH
 
 GEOHASH_LEN_TO_METERS = {
     1: 5000000, 2: 1250000, 3: 156000, 4: 39000,
@@ -21,7 +23,25 @@ def get_vendor_from_mac(mac_address: str) -> Optional[str]:
         return None
     try:
         oui = mac_address.replace(":", "").replace("-", "").upper()[:6]
-        return OUI_VENDOR_MAP.get(oui)
+        
+        vendor = OUI_VENDOR_MAP.get(oui)
+        if vendor:
+            return vendor
+
+        if not OUI_VENDOR_MAP:
+            try:
+                con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+                cur = con.cursor()
+                cur.execute("SELECT vendor FROM oui_vendors WHERE oui = ?", (oui,))
+                row = cur.fetchone()
+                con.close()
+                if row:
+                    OUI_VENDOR_MAP[oui] = row[0]
+                    return row[0]
+            except Exception:
+                return None
+
+        return None
     except Exception:
         return None
 

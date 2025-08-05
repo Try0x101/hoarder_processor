@@ -47,9 +47,12 @@ echo "Redis master is available."
 
 sleep 3
 
+echo "Initializing database..."
 python3 scripts/init_db.py
+echo "Database initialization complete."
 
 if [ ! -f "$DB_FILE" ]; then
+    echo "FATAL: Database file '$DB_FILE' not found after initialization." >&2
     exit 1
 fi
 

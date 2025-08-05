@@ -4,10 +4,14 @@ import orjson
 import redis.asyncio as redis
 import redis as sync_redis
 import datetime
+import sqlite3
+import re
+import urllib.request
 from typing import List, Dict, Any, Optional, Tuple
 
 DB_FILE = "hoarder_processor.db"
 DB_PATH = "/opt/hoarder_processor/hoarder_processor.db"
+OUI_URL = "https://standards-oui.ieee.org/oui/oui.txt"
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS enriched_telemetry (
@@ -32,6 +36,46 @@ CREATE TABLE IF NOT EXISTS oui_vendors (
 CREATE INDEX IF NOT EXISTS idx_enriched_device_event_time ON enriched_telemetry (device_id, calculated_event_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_enriched_event_time ON enriched_telemetry (calculated_event_timestamp DESC);
 """
+
+def initialize_database_if_needed():
+    try:
+        con = sqlite3.connect(DB_PATH, timeout=30.0)
+        cur = con.cursor()
+        cur.executescript(DB_SCHEMA)
+        con.commit()
+        
+        cur.execute("SELECT COUNT(*) FROM oui_vendors")
+        if cur.fetchone()[0] > 0:
+            con.close()
+            return
+
+        print("OUI table is empty. Populating now...")
+        req = urllib.request.Request(
+            OUI_URL,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            if response.status != 200:
+                return
+            oui_data = response.read().decode('utf-8')
+
+        oui_pattern = re.compile(r"^([0-9A-F]{2}-[0-9A-F]{2}-[0-9A-F]{2})\s+\(hex\)\s+(.*)$")
+        vendors = [
+            (match.group(1).replace("-", "").upper(), match.group(2).strip())
+            for line in oui_data.splitlines()
+            if (match := oui_pattern.match(line))
+        ]
+        
+        if vendors:
+            cur.execute("BEGIN")
+            cur.executemany("INSERT OR REPLACE INTO oui_vendors (oui, vendor) VALUES (?, ?)", vendors)
+            con.commit()
+            print(f"Successfully populated OUI table with {len(vendors)} vendors.")
+    except Exception as e:
+        print(f"CRITICAL: An error occurred during database initialization: {e}")
+    finally:
+        if 'con' in locals() and con:
+            con.close()
 
 REDIS_SENTINEL_HOSTS = [('localhost', 26379), ('localhost', 26380), ('localhost', 26381)]
 REDIS_MASTER_NAME = "mymaster"
