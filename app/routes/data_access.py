@@ -22,12 +22,17 @@ router = APIRouter(
 KEY_ORDERS = {
     'data': ['identity', 'location', 'power', 'device_state', 'sensors', 'network', 'environment', 'app_settings', 'diagnostics'],
     'identity': ['device_name', 'device_id'],
-    'location': ['latitude', 'longitude', 'altitude_in_meters', 'elevation_in_meters', 'accuracy_in_meters', 'speed_in_kmh', 'geohash_precision_in_meters', 'location_actual_timezone'],
+    'location': [
+        'latitude', 'longitude', 'altitude_in_meters', 'elevation_in_meters', 
+        'altitude_above_ground_level_meters', 'height_above_surface_meters', 
+        'relative_altitude_change_meters', 'estimated_floor', 'altitude_source',
+        'accuracy_in_meters', 'speed_in_kmh', 'geohash_precision_in_meters', 'location_actual_timezone'
+    ],
     'power': ['battery_percent', 'capacity_in_mah', 'calculated_leftover_capacity_in_mah', 'charging_state', 'power_save_mode'],
     'device_state': ['screen_on', 'vpn_active', 'network_metered', 'data_activity', 'system_audio_state', 'camera_active', 'flashlight_on', 'phone_activity_state'],
     'sensors': ['device_temperature_celsius', 'device_ambient_light_level', 'device_ambient_light_lux_range', 'device_barometer_hpa', 'device_steps_since_boot', 'device_proximity_sensor_closer_than_5cm'],
-    'network': ['currently_used_active_network', 'source_ip', 'cellular_analysis', 'wifi', 'bandwidth', 'cellular'],
-    'cellular_analysis': ['predicted_upload_throughput_mbps', 'connection_state', 'prediction_source', 'link_speed_mbps', 'effective_link_speed_mbps', 'quality_derating_factor', 'strength_derating_factor', 'volatility_index'],
+    'network': ['currently_used_active_network', 'source_ip', 'cellular_analysis_only_for_lte', 'wifi', 'bandwidth', 'cellular'],
+    'cellular_analysis_only_for_lte': ['predicted_upload_throughput_mbps', 'connection_state', 'prediction_source', 'effective_link_speed_mbps', 'quality_derating_factor', 'strength_derating_factor', 'volatility_index'],
     'wifi': ['ssid', 'bssid', 'frequency_channel', 'frequency_band', 'rssi_dbm', 'link_speed_quality_index', 'link_speed_mbps_range', 'standard'],
     'bandwidth': ['download_in_mbps', 'upload_in_mbps'],
     'cellular': ['type', 'operator', 'signal', 'mcc', 'mnc', 'cell_id', 'tac', 'timing_advance'],

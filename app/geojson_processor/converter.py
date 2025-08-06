@@ -50,7 +50,6 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         identity = payload.get("identity", {})
         network = payload.get("network", {})
         power = payload.get("power", {})
-        wifi = network.get("wifi", {})
         cellular = network.get("cellular", {})
         signal = cellular.get("signal", {})
         strength = signal.get("strength", {})
@@ -61,32 +60,25 @@ def process_row_to_geojson(db_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         
         device_id = identity.get("device_id")
         device_name = identity.get("device_name")
-        device_id_name = f"{device_id} {device_name}" if device_id and device_name else device_id
 
         properties = {
             "internal_id": db_row["id"],
-            "device_id_name": device_id_name,
+            "device_id": device_id,
+            "device_name": device_name,
             "data_timestamp": _to_unix_timestamp(db_row.get("calculated_event_timestamp")),
             "latitude": round(lat, decimal_places),
             "longitude": round(lon, decimal_places),
             "gps_altitude_in_meters": location.get("altitude_in_meters"),
             "gps_accuracy_in_meters": location.get("accuracy_in_meters"),
             "geohash_precision_in_meters": precision_meters,
-            "location_actual_timezone": location.get("location_actual_timezone"),
             "speed_in_kmh": location.get("speed_in_kmh"),
-            "source_ip": network.get("source_ip"),
             "active_network": network.get("currently_used_active_network"),
-            "cell_network_type": cellular.get("type"),
-            "cell_operator": cellular.get("operator"),
             "signal_strength_in_dbm": strength.get("value_dbm"),
-            "link_speed_mbps_range": wifi.get("link_speed_mbps_range"),
             "battery_percent": power.get("battery_percent"),
             "phone_activity_state": device_state.get("phone_activity_state"),
             "screen_on": device_state.get("screen_on"),
             "device_proximity_sensor_closer_than_5cm": sensors.get("device_proximity_sensor_closer_than_5cm"),
-            "device_temperature_celsius": sensors.get("device_temperature_celsius"),
             "device_ambient_light_level": sensors.get("device_ambient_light_level"),
-            "device_ambient_light_lux_range": sensors.get("device_ambient_light_lux_range"),
             "device_barometer_hpa": sensors.get("device_barometer_hpa"),
             "device_steps_since_boot": sensors.get("device_steps_since_boot"),
             "temperature_in_celsius": weather.get("temperature_in_celsius"),

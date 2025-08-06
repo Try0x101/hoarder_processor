@@ -1,24 +1,23 @@
 import aiosqlite
 import asyncio
 import os
-from . import settings, state, converter, writer
+from . import settings, converter, writer
 from app.database import ensure_db_initialized
 
-async def fetch_new_records(conn: aiosqlite.Connection, last_id: int):
+async def fetch_latest_records(conn: aiosqlite.Connection, offset: int):
     conn.row_factory = aiosqlite.Row
     query = """
         SELECT id, enriched_payload, calculated_event_timestamp
         FROM enriched_telemetry
-        WHERE id > ?
-        ORDER BY id ASC
+        ORDER BY id DESC
         LIMIT ?
+        OFFSET ?
     """
-    cursor = await conn.execute(query, (last_id, settings.QUERY_BATCH_SIZE))
+    cursor = await conn.execute(query, (settings.QUERY_BATCH_SIZE, offset))
     return await cursor.fetchall()
 
 async def run_processor_once():
-    last_processed_id = await state.load_last_processed_id()
-    print(f"GEOJSON: Starting run. Last processed ID: {last_processed_id}")
+    print("GEOJSON: Starting snapshot generation.")
     
     manager = writer.GeoJSONManager()
     
@@ -30,40 +29,39 @@ async def run_processor_once():
             await db.execute("PRAGMA journal_mode=WAL;")
             await db.execute("PRAGMA synchronous=NORMAL;")
             
-            records = await fetch_new_records(db, last_processed_id)
-            if not records:
-                cursor = await db.execute("SELECT MAX(id) FROM enriched_telemetry")
-                max_db_id_row = await cursor.fetchone()
-                max_db_id = max_db_id_row[0] if max_db_id_row and max_db_id_row[0] is not None else 0
-                
-                if last_processed_id > 0 and max_db_id < last_processed_id:
-                    print(f"GEOJSON: Stale state detected. Max DB ID ({max_db_id}) is less than last processed ID ({last_processed_id}). Resetting state.")
-                    await state.save_last_processed_id(0)
-                    last_processed_id = 0
-                    records = await fetch_new_records(db, last_processed_id)
+            offset = 0
+            total_features_written = 0
 
-            if not records:
-                print("GEOJSON: No new records found.")
-            else:
-                while records:
-                    print(f"GEOJSON: Fetched {len(records)} new records.")
-                    features = []
-                    for row in records:
-                        feature = converter.process_row_to_geojson(dict(row))
-                        if feature:
-                            features.append(feature)
-                    
-                    if features:
-                        await manager.write_features(features)
-                    
-                    new_last_id = records[-1]['id']
-                    await state.save_last_processed_id(new_last_id)
-                    last_processed_id = new_last_id
-                    print(f"GEOJSON: Advanced to last processed ID: {last_processed_id}")
-                    
-                    if len(records) < settings.QUERY_BATCH_SIZE:
-                        break 
-                    records = await fetch_new_records(db, last_processed_id)
+            while True:
+                records = await fetch_latest_records(db, offset)
+                if not records:
+                    print("GEOJSON: No more records to process.")
+                    break
+
+                features = []
+                for row in records:
+                    feature = converter.process_row_to_geojson(dict(row))
+                    if feature:
+                        features.append(feature)
+                
+                if features:
+                    await manager.write_features(features)
+                    total_features_written += len(features)
+
+                current_size = 0
+                if manager.temp_path and os.path.exists(manager.temp_path):
+                    current_size = os.path.getsize(manager.temp_path)
+                
+                print(f"GEOJSON: Written {len(features)} features. Total: {total_features_written}. File size: {current_size // 1024}KB.")
+
+                if current_size >= settings.MAX_FILE_SIZE_BYTES:
+                    print(f"GEOJSON: File size limit ({settings.MAX_FILE_SIZE_BYTES // (1024*1024)}MB) reached. Stopping.")
+                    break
+                
+                if len(records) < settings.QUERY_BATCH_SIZE:
+                    break
+                
+                offset += settings.QUERY_BATCH_SIZE
 
     except aiosqlite.Error as e:
         print(f"GeoJSON Processor DB Error: {e}")

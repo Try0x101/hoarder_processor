@@ -21,11 +21,10 @@ class GeoJSONManager:
     def __init__(self):
         self.latest_file_path = self._find_latest_file()
         self._file_handle = None
-        self._temp_path = None
+        self.temp_path = None
         self._is_first_feature = True
         self._features_written = False
         self.timestamp_str = None
-        self.started_from_existing = False
 
     def _find_latest_file(self) -> Optional[str]:
         try:
@@ -37,34 +36,9 @@ class GeoJSONManager:
     async def start_writing(self):
         os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
         self.timestamp_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-        self._temp_path = os.path.join(settings.OUTPUT_DIR, f"hoarder_{self.timestamp_str}.{os.getpid()}.tmp")
+        self.temp_path = os.path.join(settings.OUTPUT_DIR, f"hoarder_{self.timestamp_str}.{os.getpid()}.tmp")
 
-        if self.latest_file_path and os.path.getsize(self.latest_file_path) > 20 and os.path.getsize(self.latest_file_path) < settings.MAX_FILE_SIZE_BYTES:
-            try:
-                await asyncio.to_thread(shutil.copyfile, self.latest_file_path, self._temp_path)
-                self.started_from_existing = True
-                size = os.path.getsize(self._temp_path)
-
-                self._file_handle = await aiofiles.open(self._temp_path, "r+b")
-                
-                await self._file_handle.seek(size - 2, os.SEEK_SET)
-                if (await self._file_handle.read(2)).strip() == b']}':
-                    await self._file_handle.seek(size - 3, os.SEEK_SET)
-                    last_char = await self._file_handle.read(1)
-                    is_empty_array = last_char == b'['
-                    
-                    await self._file_handle.seek(size - 2, os.SEEK_SET)
-                    await self._file_handle.truncate()
-                    
-                    self._is_first_feature = is_empty_array
-                    return
-            except Exception:
-                self.started_from_existing = False
-                if self._file_handle:
-                    await self._file_handle.close()
-                    self._file_handle = None
-
-        self._file_handle = await aiofiles.open(self._temp_path, "wb")
+        self._file_handle = await aiofiles.open(self.temp_path, "wb")
         await self._file_handle.write(b'{"type":"FeatureCollection","features":[')
         self._is_first_feature = True
 
@@ -86,28 +60,20 @@ class GeoJSONManager:
         await self._file_handle.close()
         self._file_handle = None
 
-        if self.started_from_existing and not self._features_written:
-            print(f"GEOJSON Writer: No new features. Deleting temp file and keeping original: {self.latest_file_path}")
-            try:
-                os.remove(self._temp_path)
-            except OSError:
-                pass
-            return
-
-        print(f"GEOJSON Writer: Finalizing GeoJSON file. Features written: {self._features_written}. Continued from existing: {self.started_from_existing}.")
+        print(f"GEOJSON Writer: Finalizing GeoJSON file. Features written: {self._features_written}.")
         try:
-            file_size = os.path.getsize(self._temp_path)
+            file_size = os.path.getsize(self.temp_path)
             size_str = _format_size(file_size)
             
             new_filename = f"hoarder_{self.timestamp_str}_{size_str}.geojson"
             final_path = os.path.join(settings.OUTPUT_DIR, new_filename)
 
-            os.rename(self._temp_path, final_path)
+            os.rename(self.temp_path, final_path)
 
             if self.latest_file_path and self.latest_file_path != final_path and os.path.exists(self.latest_file_path):
                 os.remove(self.latest_file_path)
         except (OSError, AttributeError):
-            if os.path.exists(self._temp_path):
-                 os.rename(self._temp_path, f"{self._temp_path}.geojson")
+            if os.path.exists(self.temp_path):
+                 os.rename(self.temp_path, f"{self.temp_path}.geojson")
         finally:
-            self._temp_path = None
+            self.temp_path = None

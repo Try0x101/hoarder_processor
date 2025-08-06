@@ -15,13 +15,15 @@ from app.database import (
     REDIS_SENTINEL_HOSTS, REDIS_MASTER_NAME,
     REDIS_DB_POSITION, REDIS_DB_METRICS, REDIS_DB_IP_INTEL,
     get_device_batch_ts, save_device_batch_ts, delete_device_batch_ts,
-    ensure_db_initialized, get_cellular_analysis_state, save_cellular_analysis_state
+    ensure_db_initialized, get_cellular_analysis_state, save_cellular_analysis_state,
+    get_altitude_analysis_state, save_altitude_analysis_state, DEVICE_LOCK_KEY_PREFIX, DEVICE_LOCK_TIMEOUT_SECONDS
 )
-from app.utils import cleanup_empty, reconstruct_from_freshness, update_freshness_from_full_state
+from app.utils import cleanup_empty
 from app.weather import get_weather_enrichment
 from app.transforms import transform_payload
 from app.ip_intelligence import get_ip_intelligence
 from app.cellular_analysis import analyze_cellular_state
+from app.altitude_analysis import analyze_altitude
 
 MAX_DB_SIZE_BYTES = 10 * 1024 * 1024 * 1024
 TARGET_DB_SIZE_BYTES = 9 * 1024 * 1024 * 1024
@@ -41,7 +43,6 @@ def prepare_flat_data(record: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _process_and_store_statefully(records: List[Dict[str, Any]]):
     start_time = time.monotonic()
-    records_to_save = []
     
     records_by_device: Dict[str, List[Dict[str, Any]]] = {}
     for r in records:
@@ -57,122 +58,121 @@ async def _process_and_store_statefully(records: List[Dict[str, Any]]):
         position_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_POSITION)
         ip_intel_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_IP_INTEL)
         
-        async with aiosqlite.connect(DB_PATH) as db:
-            await ensure_db_initialized(db)
-            for device_id, device_records in records_by_device.items():
-                sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
+        for device_id, device_records in records_by_device.items():
+            lock_key = f"{DEVICE_LOCK_KEY_PREFIX}:{device_id}"
+            lock_acquired = await position_redis_client.set(lock_key, "1", ex=DEVICE_LOCK_TIMEOUT_SECONDS, nx=True)
+
+            if not lock_acquired:
+                process_and_store_data.apply_async(args=[device_records], countdown=5)
+                continue
+
+            try:
+                records_to_save = []
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await ensure_db_initialized(db)
+                    
+                    sorted_records = sorted(device_records, key=lambda r: r.get('calculated_event_timestamp', ''))
+                    
+                    base_ts = await get_device_batch_ts(position_redis_client, device_id)
+                    current_simple_state, _ = await get_latest_state_for_device(db, device_id)
+                    if current_simple_state is None:
+                        current_simple_state = {}
+                    
+                    cellular_analysis_state = await get_cellular_analysis_state(position_redis_client, device_id)
+                    altitude_analysis_state = await get_altitude_analysis_state(position_redis_client, device_id)
+
+                    for record in sorted_records:
+                        # Timestamp calculation logic remains the same
+                        payload = record.get("payload", {})
+                        event_timestamp_dt = None
+                        if 'ts' in payload and payload['ts'] is not None:
+                            base_ts = int(payload['ts'])
+                            await save_device_batch_ts(position_redis_client, device_id, base_ts)
+                            event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts, tz=datetime.timezone.utc)
+                        elif 'to' in payload and base_ts is not None and payload['to'] is not None:
+                            event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts + int(payload['to']), tz=datetime.timezone.utc)
+                        elif record.get('received_at'):
+                            try:
+                                event_timestamp_dt = datetime.datetime.fromisoformat(record['received_at'].replace(" ", "T").replace("Z", "+00:00"))
+                                base_ts = None
+                                await delete_device_batch_ts(position_redis_client, device_id)
+                            except (ValueError, TypeError): continue
+                        else: continue
+                        record['calculated_event_timestamp'] = event_timestamp_dt.isoformat(sep=' ', timespec='seconds')
+                        
+                        # Enrichment logic
+                        request_size_bytes = len(orjson.dumps(record))
+                        flat_data = prepare_flat_data(record)
+                        ip_intel_data = await get_ip_intelligence(ip_intel_redis_client, flat_data.get("client_ip"))
+                        flat_data = await get_weather_enrichment(position_redis_client, device_id, flat_data)
+                        
+                        new_full_simple_state = transform_payload(flat_data, current_simple_state, ip_intel_data)
+                        
+                        analysis_payload, cellular_analysis_state = analyze_cellular_state(new_full_simple_state, cellular_analysis_state)
+                        new_full_simple_state['network']['cellular_analysis_only_for_lte'] = analysis_payload
+                        await save_cellular_analysis_state(position_redis_client, device_id, cellular_analysis_state)
+
+                        altitude_payload, altitude_analysis_state = analyze_altitude(new_full_simple_state, altitude_analysis_state)
+                        new_full_simple_state['location'].update(altitude_payload)
+                        await save_altitude_analysis_state(position_redis_client, device_id, altitude_analysis_state)
+                        
+                        current_simple_state = new_full_simple_state
+
+                        records_to_save.append({
+                            "original_ingest_id": flat_data.get("original_ingest_id"),
+                            "device_id": device_id,
+                            "historical_payload": new_full_simple_state,
+                            "latest_payload": new_full_simple_state,
+                            "calculated_event_timestamp": record['calculated_event_timestamp'],
+                            "request_size_bytes": request_size_bytes
+                        })
                 
-                base_ts = await get_device_batch_ts(position_redis_client, device_id)
-                current_freshness_payload, _ = await get_latest_state_for_device(db, device_id)
-                cellular_analysis_state = await get_cellular_analysis_state(position_redis_client, device_id)
+                if records_to_save:
+                    await save_stateful_data(records_to_save)
 
-                for record in sorted_records:
-                    payload = record.get("payload", {})
-                    event_timestamp_dt = None
-                    
-                    if 'ts' in payload and payload['ts'] is not None:
-                        base_ts = int(payload['ts'])
-                        await save_device_batch_ts(position_redis_client, device_id, base_ts)
-                        event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts, tz=datetime.timezone.utc)
-                    elif 'to' in payload and base_ts is not None and payload['to'] is not None:
-                        event_timestamp_dt = datetime.datetime.fromtimestamp(base_ts + int(payload['to']), tz=datetime.timezone.utc)
-                    elif record.get('received_at'):
-                        try:
-                            event_timestamp_dt = datetime.datetime.fromisoformat(record['received_at'].replace(" ", "T").replace("Z", "+00:00"))
-                            base_ts = None
-                            await delete_device_batch_ts(position_redis_client, device_id)
-                        except (ValueError, TypeError):
-                            continue
-                    else:
-                        continue
-                    
-                    record['calculated_event_timestamp'] = event_timestamp_dt.isoformat(sep=' ', timespec='seconds')
-                    
-                    request_size_bytes = len(orjson.dumps(record))
-                    flat_data = prepare_flat_data(record)
-                    
-                    current_record_ts = flat_data.get("calculated_event_timestamp")
-                    if not current_record_ts: continue
-
-                    simple_base_state = reconstruct_from_freshness(current_freshness_payload) if current_freshness_payload else {}
-                    
-                    ip_intel_data = await get_ip_intelligence(ip_intel_redis_client, flat_data.get("client_ip"))
-                    flat_data = await get_weather_enrichment(position_redis_client, device_id, flat_data)
-
-                    new_full_simple_state = transform_payload(flat_data, simple_base_state, ip_intel_data)
-                    
-                    analysis_payload, cellular_analysis_state = analyze_cellular_state(new_full_simple_state, cellular_analysis_state)
-                    new_full_simple_state['network']['cellular_analysis'] = analysis_payload
-                    await save_cellular_analysis_state(position_redis_client, device_id, cellular_analysis_state)
-                    
-                    new_freshness_payload = update_freshness_from_full_state(
-                        current_freshness_payload or {},
-                        new_full_simple_state,
-                        current_record_ts
-                    )
-                    
-                    records_to_save.append({
-                        "original_ingest_id": flat_data.get("original_ingest_id"),
-                        "device_id": device_id,
-                        "historical_payload": new_full_simple_state,
-                        "latest_payload": new_freshness_payload,
-                        "calculated_event_timestamp": current_record_ts,
-                        "request_size_bytes": request_size_bytes
-                    })
-                    
-                    current_freshness_payload = new_freshness_payload
-
-        if records_to_save:
-            await save_stateful_data(records_to_save)
+            finally:
+                await position_redis_client.delete(lock_key)
 
         duration = time.monotonic() - start_time
-        num_records = len(records_to_save)
+        num_records = sum(len(recs) for recs in records_by_device.values())
         if num_records > 0:
             stats_redis_client = None
             try:
                 stats_redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_METRICS, decode_responses=False)
-                data_point = orjson.dumps({
-                    "ts": time.time(), "duration": duration, "count": num_records
-                })
+                data_point = orjson.dumps({"ts": time.time(), "duration": duration, "count": num_records})
                 await stats_redis_client.lpush("processing_stats", data_point)
                 await stats_redis_client.ltrim("processing_stats", 0, 1999)
-            except redis.RedisError:
-                pass
+            except redis.RedisError: pass
             finally:
-                if stats_redis_client:
-                    await stats_redis_client.close()
+                if stats_redis_client: await stats_redis_client.close()
 
     except Exception as e:
         print(f"Error in stateful processing task: {e}")
         raise
     finally:
-        if position_redis_client:
-            await position_redis_client.close()
-        if ip_intel_redis_client:
-            await ip_intel_redis_client.close()
+        if position_redis_client: await position_redis_client.close()
+        if ip_intel_redis_client: await ip_intel_redis_client.close()
 
-@celery_app.task(name="processor.process_and_store_data")
-def process_and_store_data(records: List[Dict[str, Any]]):
+@celery_app.task(name="processor.process_and_store_data", bind=True)
+def process_and_store_data(self, records: List[Dict[str, Any]]):
     if not records:
         return
-    asyncio.run(_process_and_store_statefully(records))
+    try:
+        asyncio.run(_process_and_store_statefully(records))
+    except Exception as e:
+        raise self.retry(exc=e, countdown=5)
 
 async def _async_cleanup_db():
     try:
-        if not os.path.exists(DB_PATH):
-            return
+        if not os.path.exists(DB_PATH): return
         total_size = sum(os.path.getsize(DB_PATH + s) for s in ["", "-wal", "-shm"] if os.path.exists(DB_PATH + s))
-        if total_size < MAX_DB_SIZE_BYTES:
-            return
+        if total_size < MAX_DB_SIZE_BYTES: return
 
         async with aiosqlite.connect(DB_PATH, timeout=120) as db:
             await ensure_db_initialized(db)
             while total_size > TARGET_DB_SIZE_BYTES:
-                cursor = await db.execute(
-                    "DELETE FROM enriched_telemetry WHERE id IN (SELECT id FROM enriched_telemetry ORDER BY calculated_event_timestamp ASC, id ASC LIMIT 1000)"
-                )
-                if cursor.rowcount == 0:
-                    break
+                cursor = await db.execute("DELETE FROM enriched_telemetry WHERE id IN (SELECT id FROM enriched_telemetry ORDER BY calculated_event_timestamp ASC, id ASC LIMIT 1000)")
+                if cursor.rowcount == 0: break
                 await db.commit()
                 total_size = sum(os.path.getsize(DB_PATH + s) for s in ["", "-wal", "-shm"] if os.path.exists(DB_PATH + s))
             
@@ -185,15 +185,11 @@ def _get_app_processes():
     pids = []
     try:
         for proc in psutil.process_iter(['pid', 'cmdline']):
-            if not proc.info['cmdline']:
-                continue
+            if not proc.info['cmdline']: continue
             cmd = " ".join(proc.info['cmdline'])
-            if 'uvicorn app.main:app' in cmd or \
-               'celery -A celery_app worker' in cmd or \
-               'celery -A celery_app beat' in cmd:
+            if 'uvicorn app.main:app' in cmd or 'celery -A celery_app worker' in cmd or 'celery -A celery_app beat' in cmd:
                 pids.append(proc.pid)
-    except psutil.Error:
-        pass
+    except psutil.Error: pass
     return [psutil.Process(p) for p in set(pids) if psutil.pid_exists(p)]
 
 @celery_app.task(name="processor.monitor_system")
@@ -201,11 +197,9 @@ def monitor_system():
     redis_client = None
     try:
         processes = _get_app_processes()
-        if not processes:
-            return
+        if not processes: return
 
-        for p in processes:
-            p.cpu_percent()
+        for p in processes: p.cpu_percent()
         time.sleep(0.5)
 
         total_cpu = sum(p.cpu_percent() for p in processes)
@@ -213,18 +207,13 @@ def monitor_system():
 
         sentinel = sync_redis.Sentinel(REDIS_SENTINEL_HOSTS, socket_timeout=0.5)
         redis_client = sentinel.master_for(REDIS_MASTER_NAME, db=REDIS_DB_METRICS)
-        data_point = orjson.dumps({
-            "ts": time.time(), "cpu_percent": total_cpu, "mem_rss_bytes": total_mem
-        })
+        data_point = orjson.dumps({"ts": time.time(), "cpu_percent": total_cpu, "mem_rss_bytes": total_mem})
         
         pipe = redis_client.pipeline()
         pipe.lpush("system_stats", data_point)
         pipe.ltrim("system_stats", 0, 399)
         pipe.execute()
-    except (psutil.Error, sync_redis.RedisError):
-        pass
-    except Exception:
-        pass
+    except (psutil.Error, sync_redis.RedisError): pass
+    except Exception: pass
     finally:
-        if redis_client:
-            redis_client.close()
+        if redis_client: redis_client.close()

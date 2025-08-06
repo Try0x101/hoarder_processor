@@ -91,6 +91,10 @@ DEVICE_BATCH_TS_KEY_PREFIX = "device:batch_ts"
 DEVICE_BATCH_TS_TTL_SECONDS = 6 * 3600
 CELLULAR_ANALYSIS_KEY_PREFIX = "cellular:analysis"
 CELLULAR_ANALYSIS_TTL_SECONDS = 30 * 24 * 3600
+ALTITUDE_ANALYSIS_KEY_PREFIX = "altitude:analysis"
+ALTITUDE_ANALYSIS_TTL_SECONDS = 30 * 24 * 3600
+DEVICE_LOCK_KEY_PREFIX = "lock:device"
+DEVICE_LOCK_TIMEOUT_SECONDS = 300
 
 async def ensure_db_initialized(conn: aiosqlite.Connection):
     await conn.executescript(DB_SCHEMA)
@@ -104,6 +108,9 @@ def _get_redis_batch_ts_key(device_id: str) -> str:
 
 def _get_redis_cellular_analysis_key(device_id: str) -> str:
     return f"{CELLULAR_ANALYSIS_KEY_PREFIX}:{device_id}"
+
+def _get_redis_altitude_analysis_key(device_id: str) -> str:
+    return f"{ALTITUDE_ANALYSIS_KEY_PREFIX}:{device_id}"
 
 async def get_all_oui_vendors(conn: aiosqlite.Connection) -> Dict[str, str]:
     conn.row_factory = aiosqlite.Row
@@ -148,6 +155,21 @@ async def save_cellular_analysis_state(redis_client: redis.Redis, device_id: str
     except redis.RedisError:
         pass
 
+async def get_altitude_analysis_state(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
+    redis_key = _get_redis_altitude_analysis_key(device_id)
+    try:
+        state_data = await redis_client.get(redis_key)
+        return orjson.loads(state_data) if state_data else None
+    except (redis.RedisError, orjson.JSONDecodeError):
+        return None
+
+async def save_altitude_analysis_state(redis_client: redis.Redis, device_id: str, state: Dict[str, Any]):
+    redis_key = _get_redis_altitude_analysis_key(device_id)
+    try:
+        await redis_client.set(redis_key, orjson.dumps(state), ex=ALTITUDE_ANALYSIS_TTL_SECONDS)
+    except redis.RedisError:
+        pass
+
 async def get_device_position(redis_client: redis.Redis, device_id: str) -> Optional[Dict[str, Any]]:
     redis_key = _get_redis_position_key(device_id)
     try:
@@ -189,6 +211,7 @@ async def get_latest_state_for_device(conn: aiosqlite.Connection, device_id: str
     row = await cursor.fetchone()
     if row and row["enriched_payload"] and row["last_updated_ts"]:
         try:
+            # The payload in latest_enriched_state is now the full state, not a freshness payload.
             return orjson.loads(row["enriched_payload"]), row["last_updated_ts"]
         except orjson.JSONDecodeError:
             return None, None
@@ -208,13 +231,16 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
         )
         for r in records
     ]
-    latest_state_to_save = [
-        (
-            r.get("device_id"),
-            orjson.dumps(r.get("latest_payload")).decode(),
-            r.get("calculated_event_timestamp"),
-        )
-        for r in records
+    
+    latest_state_to_save = {}
+    for r in records:
+        device_id = r.get("device_id")
+        ts = r.get("calculated_event_timestamp")
+        if device_id not in latest_state_to_save or ts > latest_state_to_save[device_id][1]:
+            latest_state_to_save[device_id] = (orjson.dumps(r.get("latest_payload")).decode(), ts)
+
+    latest_state_to_save_list = [
+        (device_id, payload, ts) for device_id, (payload, ts) in latest_state_to_save.items()
     ]
 
     try:
@@ -235,7 +261,7 @@ async def save_stateful_data(records: List[Dict[str, Any]]):
                        enriched_payload=excluded.enriched_payload, 
                        last_updated_ts=excluded.last_updated_ts
                    WHERE excluded.last_updated_ts > latest_enriched_state.last_updated_ts""",
-                latest_state_to_save,
+                latest_state_to_save_list,
             )
             await db.commit()
     except Exception as e:

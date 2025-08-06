@@ -68,20 +68,26 @@ def analyze_cellular_state(
     strength = cellular.get("signal", {}).get("strength", {}).get("value_dbm")
     quality = cellular.get("signal", {}).get("quality", {}).get("value")
     cell_type = cellular.get("type", "Other")
+    active_network_type = network.get("currently_used_active_network")
     cell_id = cellular.get("cell_id")
     link_speed = bandwidth.get("upload_in_mbps")
 
     analysis = {
         "predicted_upload_throughput_mbps": None,
-        "connection_state": ConnectionState.UNKNOWN,
-        "prediction_source": "Heuristic (Link Speed Based)",
-        "link_speed_mbps": link_speed,
+        "connection_state": None,
+        "prediction_source": None,
         "effective_link_speed_mbps": None,
         "quality_derating_factor": None,
         "strength_derating_factor": None,
         "volatility_index": None,
     }
 
+    if active_network_type != "LTE":
+        return analysis, profile
+
+    analysis["prediction_source"] = "Heuristic (Link Speed Based)"
+    analysis["connection_state"] = ConnectionState.UNKNOWN
+    
     history_deque = deque(profile.get("metric_history", []), maxlen=PROFILE_HISTORY_LENGTH)
     if strength is not None and quality is not None:
         history_deque.append({"strength": strength, "quality": quality})

@@ -106,40 +106,24 @@ def reconstruct_from_freshness(freshness_payload: Dict) -> Dict:
             simple_payload[key] = node
     return simple_payload
 
-def _convert_to_freshness(payload: Dict, timestamp: str) -> Dict:
-    fresh_payload = {}
-    for key, value in payload.items():
-        if isinstance(value, dict):
-            fresh_payload[key] = _convert_to_freshness(value, timestamp)
-        elif value is not None:
-            fresh_payload[key] = {"value": value, "ts": timestamp}
-    return fresh_payload
-
-def update_freshness_from_full_state(base_freshness: dict, new_full_simple: dict, new_ts: str) -> dict:
-    new_freshness = {}
-    all_keys = set(base_freshness.keys()) | set(new_full_simple.keys())
-
-    for key in all_keys:
-        new_simple_value = new_full_simple.get(key)
-        base_node = base_freshness.get(key)
-
-        if key not in new_full_simple:
+def update_freshness_from_full_state(base: dict, new_data: dict, new_ts: str) -> dict:
+    merged = copy.deepcopy(base)
+    for key, new_value in new_data.items():
+        if key not in merged:
+            if isinstance(new_value, dict):
+                merged[key] = update_freshness_from_full_state({}, new_value, new_ts)
+            else:
+                merged[key] = {"value": new_value, "ts": new_ts}
             continue
 
-        if isinstance(new_simple_value, dict):
-            base_sub_freshness = base_node if isinstance(base_node, dict) and "value" not in base_node else {}
-            updated_sub_freshness = update_freshness_from_full_state(base_sub_freshness, new_simple_value, new_ts)
-            if updated_sub_freshness:
-                new_freshness[key] = updated_sub_freshness
+        base_node = merged.get(key)
+        if isinstance(new_value, dict) and isinstance(base_node, dict) and "value" not in base_node:
+            merged[key] = update_freshness_from_full_state(base_node, new_value, new_ts)
         else:
-            old_value = base_node.get("value") if isinstance(base_node, dict) else None
-            
-            if not base_node or old_value != new_simple_value:
-                new_freshness[key] = {"value": new_simple_value, "ts": new_ts}
-            else:
-                new_freshness[key] = base_node
-                
-    return new_freshness
+            base_value = base_node.get("value") if isinstance(base_node, dict) else base_node
+            if base_value != new_value:
+                merged[key] = {"value": new_value, "ts": new_ts}
+    return merged
 
 def parse_freshness_payload(freshness_payload: Dict) -> Tuple[Dict, Dict]:
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -322,7 +306,7 @@ APP_SETTINGS_KEY_MAP = {
     "fc": "force_continuous", "p1": "continuous_power_mode", "p2": "optimized_power_mode",
     "p3": "passive_power_mode", "x1": "wifi_rssi_precision", "xa": "gps_altitude_precision",
     "xb": "battery_precision", "xc": "step_counter_precision", "xg": "gps_precision",
-    "xl": "ambient_light_precision", "xn": "network_speed_precision", "xp": "barometer_precision",
+    "xn": "network_speed_precision", "xp": "barometer_precision",
     "xr": "cellular_rssi_precision", "xs": "speed_precision", "dm": "diagnostics_master_switch",
     "ea": "system_audio_toggle", "eb": "barometer_toggle", "ec": "charging_state_toggle",
     "ed": "cellular_data_activity_toggle", "ef": "cell_signal_quality_toggle",
@@ -371,8 +355,7 @@ def group_and_rename_app_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         'xa': {0:"Smart", 1:"Max", 2:"2m", 3:"10m", 4:"25m", 5:"50m", 6:"100m"},
         'xb': {0:"Smart", 1:"Max", 2:"2%", 3:"5%", 4:"10%"},
         'xc': {0:"Smart", 1:"Max", 2:"10 steps", 3:"100 steps", 4:"1000 steps"},
-        'xg': {0:"Smart", 1:"Max", 2:"20m", 3:"100m", 4:"1km", 5:"10km"},
-        'xl': {0:"Smart", 1:"Max", 2:"1-lux", 3:"10-lux", 4:"100-lux"},
+        'xg': {0:"Max", 1:"20m", 2:"100m", 3:"1km", 4:"10km"},
         'xn': {0:"Smart", 1:"Max", 2:"1Mbps", 3:"2Mbps", 4:"5Mbps"},
         'xp': {0:"Smart", 1:"Max", 2:"0.1hPa", 3:"1hPa", 4:"10hPa"},
         'xr': {0:"Smart", 1:"Max", 2:"3dBm", 3:"5dBm", 4:"10dBm"},
@@ -405,7 +388,6 @@ def group_and_rename_app_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
             "battery_level": PRECISION_MAP.get('xb', {}).get(s.get('xb')),
             "step_counter": PRECISION_MAP.get('xc', {}).get(s.get('xc')),
             "gps_coordinates": PRECISION_MAP.get('xg', {}).get(s.get('xg')),
-            "ambient_light": PRECISION_MAP.get('xl', {}).get(s.get('xl')),
             "network_speed": PRECISION_MAP.get('xn', {}).get(s.get('xn')),
             "barometer": PRECISION_MAP.get('xp', {}).get(s.get('xp')),
             "cellular_signal_strength": PRECISION_MAP.get('xr', {}).get(s.get('xr')),
